@@ -415,6 +415,21 @@ func main() {
 	usage.SetStatisticsEnabled(cfg.UsageStatisticsEnabled)
 	coreauth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 
+	resolveUsagePersistencePath := func(configPath string) string {
+		if writableBase != "" {
+			return filepath.Join(writableBase, "usage.json")
+		}
+
+		trimmed := strings.TrimSpace(configPath)
+		if trimmed != "" {
+			if info, errStat := os.Stat(trimmed); errStat == nil && info.IsDir() {
+				return filepath.Join(trimmed, "usage.json")
+			}
+			return filepath.Join(filepath.Dir(trimmed), "usage.json")
+		}
+		return filepath.Join(wd, "usage.json")
+	}
+
 	if err = logging.ConfigureLogOutput(cfg); err != nil {
 		log.Errorf("failed to configure log output: %v", err)
 		return
@@ -485,8 +500,35 @@ func main() {
 			cmd.WaitForCloudDeploy()
 			return
 		}
+		startUsagePersistence := func() func() {
+			usagePersistencePath := resolveUsagePersistencePath(configFilePath)
+			legacyUsagePath := filepath.Join(filepath.Dir(usagePersistencePath), "usage", "usage.json")
+			if _, errTarget := os.Stat(usagePersistencePath); errors.Is(errTarget, os.ErrNotExist) {
+				if _, errLegacy := os.Stat(legacyUsagePath); errLegacy == nil {
+					if errMkdir := os.MkdirAll(filepath.Dir(usagePersistencePath), 0o755); errMkdir != nil {
+						log.WithError(errMkdir).Warn("failed to prepare usage persistence directory")
+					} else if errRename := os.Rename(legacyUsagePath, usagePersistencePath); errRename != nil {
+						log.WithError(errRename).Warn("failed to migrate legacy usage persistence file")
+					}
+				}
+			}
+			if errUsagePersist := usage.StartPersistence(usagePersistencePath, 0); errUsagePersist != nil {
+				log.WithError(errUsagePersist).Warn("failed to initialize usage persistence")
+			}
+			return func() {
+				stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if errUsageStop := usage.StopPersistence(stopCtx); errUsageStop != nil {
+					log.WithError(errUsageStop).Warn("failed to flush usage persistence on shutdown")
+				}
+			}
+		}
+
 		if tuiMode {
 			if standalone {
+				stopUsagePersistence := startUsagePersistence()
+				defer stopUsagePersistence()
+
 				// Standalone mode: start an embedded local server and connect TUI client to it.
 				managementasset.StartAutoUpdater(context.Background(), configFilePath)
 				hook := tui.NewLogHook(2000)
@@ -559,6 +601,9 @@ func main() {
 				}
 			}
 		} else {
+			stopUsagePersistence := startUsagePersistence()
+			defer stopUsagePersistence()
+
 			// Start the main proxy service
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
 			cmd.StartService(cfg, configFilePath, password)
