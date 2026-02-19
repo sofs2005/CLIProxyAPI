@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -299,6 +300,8 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	hasExistingData := s.totalRequests != 0 || s.successCount != 0 || s.failureCount != 0 || s.totalTokens != 0 || len(s.apis) > 0
+
 	seen := make(map[string]struct{})
 	for apiName, stats := range s.apis {
 		if stats == nil {
@@ -314,6 +317,7 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 		}
 	}
 
+	hasDetailRecords := false
 	for apiName, apiSnapshot := range snapshot.APIs {
 		apiName = strings.TrimSpace(apiName)
 		if apiName == "" {
@@ -331,6 +335,9 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 			if modelName == "" {
 				modelName = "unknown"
 			}
+			if len(modelSnapshot.Details) > 0 {
+				hasDetailRecords = true
+			}
 			for _, detail := range modelSnapshot.Details {
 				detail.Tokens = normaliseTokenStats(detail.Tokens)
 				if detail.Timestamp.IsZero() {
@@ -347,12 +354,86 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 			}
 		}
 	}
+	appliedAggregates := false
+	if !hasDetailRecords && !hasExistingData {
+		s.mergeSnapshotAggregates(snapshot)
+		appliedAggregates = true
+	}
 
 	if result.Added > 0 {
+		persistenceDirty.Store(true)
+	} else if appliedAggregates && hasSnapshotData(snapshot) {
 		persistenceDirty.Store(true)
 	}
 
 	return result
+}
+
+func (s *RequestStatistics) mergeSnapshotAggregates(snapshot StatisticsSnapshot) {
+	s.totalRequests += snapshot.TotalRequests
+	s.successCount += snapshot.SuccessCount
+	s.failureCount += snapshot.FailureCount
+	s.totalTokens += snapshot.TotalTokens
+
+	for day, value := range snapshot.RequestsByDay {
+		day = strings.TrimSpace(day)
+		if day == "" || value == 0 {
+			continue
+		}
+		s.requestsByDay[day] += value
+	}
+	for hourKey, value := range snapshot.RequestsByHour {
+		hour, ok := parseHourKey(hourKey)
+		if !ok || value == 0 {
+			continue
+		}
+		s.requestsByHour[hour] += value
+	}
+	for day, value := range snapshot.TokensByDay {
+		day = strings.TrimSpace(day)
+		if day == "" || value == 0 {
+			continue
+		}
+		s.tokensByDay[day] += value
+	}
+	for hourKey, value := range snapshot.TokensByHour {
+		hour, ok := parseHourKey(hourKey)
+		if !ok || value == 0 {
+			continue
+		}
+		s.tokensByHour[hour] += value
+	}
+
+	for apiName, apiSnapshot := range snapshot.APIs {
+		apiName = strings.TrimSpace(apiName)
+		if apiName == "" {
+			continue
+		}
+		stats, ok := s.apis[apiName]
+		if !ok || stats == nil {
+			stats = &apiStats{Models: make(map[string]*modelStats)}
+			s.apis[apiName] = stats
+		} else if stats.Models == nil {
+			stats.Models = make(map[string]*modelStats)
+		}
+
+		stats.TotalRequests += apiSnapshot.TotalRequests
+		stats.TotalTokens += apiSnapshot.TotalTokens
+
+		for modelName, modelSnapshot := range apiSnapshot.Models {
+			modelName = strings.TrimSpace(modelName)
+			if modelName == "" {
+				modelName = "unknown"
+			}
+			modelStatsValue, ok := stats.Models[modelName]
+			if !ok || modelStatsValue == nil {
+				modelStatsValue = &modelStats{}
+				stats.Models[modelName] = modelStatsValue
+			}
+			modelStatsValue.TotalRequests += modelSnapshot.TotalRequests
+			modelStatsValue.TotalTokens += modelSnapshot.TotalTokens
+		}
+	}
 }
 
 func (s *RequestStatistics) recordImported(apiName, modelName string, stats *apiStats, detail RequestDetail) {
@@ -474,4 +555,19 @@ func formatHour(hour int) string {
 	}
 	hour = hour % 24
 	return fmt.Sprintf("%02d", hour)
+}
+
+func parseHourKey(hour string) (int, bool) {
+	hour = strings.TrimSpace(hour)
+	if hour == "" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(hour)
+	if err != nil {
+		return 0, false
+	}
+	if parsed < 0 {
+		parsed = 0
+	}
+	return parsed % 24, true
 }
