@@ -769,9 +769,16 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     if (tag === "BODY" || tag === "HTML" || tag === "MAIN") return false;
     var id = ((el.id || "") + "").toLowerCase();
     if (id === "app" || id === "root" || id === "__next") return false;
+    if (el.childElementCount > 80) return false;
     var textLength = ((el.innerText || el.textContent || "") + "").length;
-    if (textLength > 8000) return false;
+    if (textLength > 5000) return false;
     if (el.querySelector && el.querySelector("header,nav,aside")) return false;
+    if (el.getBoundingClientRect) {
+      var rect = el.getBoundingClientRect();
+      if (rect && rect.width >= window.innerWidth * 0.9 && rect.height >= window.innerHeight * 0.8) {
+        return false;
+      }
+    }
     return true;
   }
 
@@ -787,20 +794,20 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
   }
 
   function resolveRowRoot(marker, markers) {
-    var cur = marker;
-    for (var i = 0; i < 8 && cur && cur.parentElement; i++) {
+    var cur = marker ? marker.parentElement : null;
+    for (var i = 0; i < 10 && cur && cur.parentElement; i++) {
       var cls = ((cur.className || "") + "").toLowerCase();
       var tag = (cur.tagName || "").toUpperCase();
-      var isCardLike = tag === "TR" || tag === "LI" || tag === "ARTICLE" || tag === "SECTION" ||
+      var isCardLike = tag === "TR" || tag === "LI" || tag === "ARTICLE" || tag === "DIV" ||
         cls.indexOf("card") !== -1 || cls.indexOf("auth") !== -1 || cls.indexOf("file") !== -1 ||
-        cls.indexOf("row") !== -1 || cls.indexOf("item") !== -1;
+        cls.indexOf("row") !== -1 || cls.indexOf("item") !== -1 || cls.indexOf("entry") !== -1;
       if (isCardLike && isSafeRowContainer(cur) && markerCountInElement(cur, markers) === 1) {
         return cur;
       }
       cur = cur.parentElement;
       if (!cur || cur === document.body) break;
     }
-    return marker;
+    return null;
   }
 
   function warningText(text) {
@@ -837,6 +844,7 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     var mode = currentMode();
     var seen = new Set();
     var markers = markerNodes();
+    var hiddenThisRound = [];
     clearRowVisibility();
 
     if (markers.length === 0) {
@@ -856,6 +864,17 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
       if (mode === "warning" && !warningText(norm)) {
         row.style.display = "none";
         row.setAttribute(HIDDEN_ATTR, "1");
+        hiddenThisRound.push(row);
+      }
+    }
+
+    if (mode === "warning" && hiddenThisRound.length > 0) {
+      var visibleText = normalize((document.body && document.body.innerText) || "");
+      if (visibleText.length < 40) {
+        for (var k = 0; k < hiddenThisRound.length; k++) {
+          hiddenThisRound[k].style.display = "";
+          hiddenThisRound[k].removeAttribute(HIDDEN_ATTR);
+        }
       }
     }
   }
