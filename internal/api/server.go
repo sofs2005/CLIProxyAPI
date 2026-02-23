@@ -5,6 +5,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"errors"
@@ -671,7 +672,192 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
-	c.File(filePath)
+	data, errRead := os.ReadFile(filePath)
+	if errRead != nil {
+		log.WithError(errRead).Error("failed to read management control panel asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	patched := injectAuthFilesWarningFilterPatch(data)
+	c.Data(http.StatusOK, "text/html; charset=utf-8", patched)
+}
+
+func injectAuthFilesWarningFilterPatch(html []byte) []byte {
+	const marker = "__cpa_auth_warning_filter_patch__"
+	if len(html) == 0 || bytes.Contains(html, []byte(marker)) {
+		return html
+	}
+
+	patch := []byte(`<script>
+(function () {
+  var MARKER = "__cpa_auth_warning_filter_patch__";
+  if (window[MARKER]) return;
+  window[MARKER] = true;
+
+  var STYLE_ID = "cpa-auth-warning-filter-style";
+  var ROOT_ID = "cpa-auth-warning-filter-root";
+  var SELECT_ID = "cpa-auth-warning-filter-select";
+  var ROW_ATTR = "data-cpa-warning-filter-row";
+  var HIDDEN_ATTR = "data-cpa-warning-filter-hidden";
+  var isZh = (document.documentElement && (document.documentElement.lang || "").toLowerCase().indexOf("zh") === 0);
+  var ZH_HEALTH = "\u5065\u5eb7\u72b6\u6001";
+  var ZH_REFRESH = "\u6700\u8fd1\u5237\u65b0";
+  var ZH_WARNING = "\u8b66\u544a";
+
+  function ensureStyle() {
+    if (document.getElementById(STYLE_ID)) return;
+    var style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = "#"+ROOT_ID+"{position:fixed;right:16px;bottom:16px;z-index:2147483647;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;display:none;gap:8px;align-items:center}#"+ROOT_ID+" label{white-space:nowrap}#"+ROOT_ID+" select{background:#1f1f1f;color:#fff;border:1px solid #666;border-radius:6px;padding:2px 6px;min-width:112px}";
+    document.head.appendChild(style);
+  }
+
+  function ensureControl() {
+    var root = document.getElementById(ROOT_ID);
+    if (root) return root;
+    ensureStyle();
+    root = document.createElement("div");
+    root.id = ROOT_ID;
+
+    var label = document.createElement("label");
+    label.setAttribute("for", SELECT_ID);
+    label.textContent = isZh ? (ZH_HEALTH + "\u8fc7\u6ee4") : "Health Filter";
+
+    var select = document.createElement("select");
+    select.id = SELECT_ID;
+    select.innerHTML = '<option value="all">'+(isZh ? "\u5168\u90e8" : "All")+'</option><option value="warning">'+(isZh ? ZH_WARNING : "Warning")+'</option>';
+    select.addEventListener("change", scheduleApply);
+
+    root.appendChild(label);
+    root.appendChild(select);
+    document.body.appendChild(root);
+    return root;
+  }
+
+  function isAuthFilesRoute() {
+    return (window.location.hash || "").indexOf("/auth-files") !== -1;
+  }
+
+  function normalize(text) {
+    return (text || "").replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  function rowCandidateNodes() {
+    return document.querySelectorAll("div,li,tr,article,section");
+  }
+
+  function isAuthRowText(text) {
+    var zh = text.indexOf(normalize(ZH_HEALTH)) !== -1 && text.indexOf(normalize(ZH_REFRESH)) !== -1;
+    var en = text.indexOf("health status") !== -1 && text.indexOf("last refresh") !== -1;
+    return zh || en;
+  }
+
+  function resolveRowRoot(node) {
+    var cur = node;
+    for (var i = 0; i < 6 && cur && cur.parentElement; i++) {
+      var cls = ((cur.className || "") + "").toLowerCase();
+      if (cur.tagName === "TR" || cur.tagName === "LI" || cur.tagName === "ARTICLE" || cls.indexOf("card") !== -1 || cls.indexOf("auth") !== -1 || cls.indexOf("file") !== -1 || cls.indexOf("row") !== -1) {
+        return cur;
+      }
+      cur = cur.parentElement;
+      if (!cur || cur === document.body) break;
+    }
+    return node;
+  }
+
+  function warningText(text) {
+    var zhNeedle = normalize(ZH_HEALTH + ": " + ZH_WARNING);
+    return text.indexOf(zhNeedle) !== -1 ||
+      text.indexOf("health status: warning") !== -1 ||
+      text.indexOf("token_invalidated") !== -1 ||
+      text.indexOf('"status": 401') !== -1 ||
+      text.indexOf("status 401") !== -1;
+  }
+
+  function currentMode() {
+    var select = document.getElementById(SELECT_ID);
+    return select ? select.value : "all";
+  }
+
+  function clearRowVisibility() {
+    var rows = document.querySelectorAll("[" + ROW_ATTR + "='1']");
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].style.display = "";
+      rows[i].removeAttribute(HIDDEN_ATTR);
+    }
+  }
+
+  function applyFilter() {
+    var root = ensureControl();
+    if (!isAuthFilesRoute()) {
+      root.style.display = "none";
+      clearRowVisibility();
+      return;
+    }
+    root.style.display = "inline-flex";
+
+    var mode = currentMode();
+    var seen = new Set();
+    var candidates = rowCandidateNodes();
+    clearRowVisibility();
+
+    for (var i = 0; i < candidates.length; i++) {
+      var node = candidates[i];
+      var text = (node.innerText || node.textContent || "");
+      var norm = normalize(text);
+      if (!isAuthRowText(norm)) continue;
+
+      var row = resolveRowRoot(node);
+      if (!row || seen.has(row)) continue;
+      seen.add(row);
+      row.setAttribute(ROW_ATTR, "1");
+
+      if (mode === "warning" && !warningText(norm)) {
+        row.style.display = "none";
+        row.setAttribute(HIDDEN_ATTR, "1");
+      }
+    }
+  }
+
+  var pending = false;
+  function scheduleApply() {
+    if (pending) return;
+    pending = true;
+    window.requestAnimationFrame(function () {
+      pending = false;
+      applyFilter();
+    });
+  }
+
+  window.addEventListener("hashchange", scheduleApply, true);
+  window.addEventListener("popstate", scheduleApply, true);
+
+  var observer = new MutationObserver(function () {
+    if (isAuthFilesRoute() && currentMode() === "warning") {
+      scheduleApply();
+    }
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", scheduleApply, { once: true });
+  } else {
+    scheduleApply();
+  }
+})();
+</script>`)
+
+	lower := bytes.ToLower(html)
+	bodyClose := []byte("</body>")
+	if idx := bytes.LastIndex(lower, bodyClose); idx >= 0 {
+		out := make([]byte, 0, len(html)+len(patch))
+		out = append(out, html[:idx]...)
+		out = append(out, patch...)
+		out = append(out, html[idx:]...)
+		return out
+	}
+	return append(html, patch...)
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {
