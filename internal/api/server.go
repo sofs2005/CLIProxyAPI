@@ -743,8 +743,18 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     return (text || "").replace(/\s+/g, " ").trim().toLowerCase();
   }
 
-  function rowCandidateNodes() {
-    return document.querySelectorAll("div,li,tr,article,section");
+  function markerNodes() {
+    var candidates = document.querySelectorAll("div,li,tr,article,section");
+    var result = [];
+    for (var i = 0; i < candidates.length; i++) {
+      var node = candidates[i];
+      var text = (node.innerText || node.textContent || "");
+      var norm = normalize(text);
+      if (isAuthRowText(norm)) {
+        result.push(node);
+      }
+    }
+    return result;
   }
 
   function isAuthRowText(text) {
@@ -753,17 +763,44 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     return zh || en;
   }
 
-  function resolveRowRoot(node) {
-    var cur = node;
-    for (var i = 0; i < 6 && cur && cur.parentElement; i++) {
+  function isSafeRowContainer(el) {
+    if (!el || el === document.body || el === document.documentElement) return false;
+    var tag = (el.tagName || "").toUpperCase();
+    if (tag === "BODY" || tag === "HTML" || tag === "MAIN") return false;
+    var id = ((el.id || "") + "").toLowerCase();
+    if (id === "app" || id === "root" || id === "__next") return false;
+    var textLength = ((el.innerText || el.textContent || "") + "").length;
+    if (textLength > 8000) return false;
+    if (el.querySelector && el.querySelector("header,nav,aside")) return false;
+    return true;
+  }
+
+  function markerCountInElement(el, markers) {
+    var count = 0;
+    for (var i = 0; i < markers.length; i++) {
+      if (el.contains(markers[i])) {
+        count++;
+        if (count > 1) return count;
+      }
+    }
+    return count;
+  }
+
+  function resolveRowRoot(marker, markers) {
+    var cur = marker;
+    for (var i = 0; i < 8 && cur && cur.parentElement; i++) {
       var cls = ((cur.className || "") + "").toLowerCase();
-      if (cur.tagName === "TR" || cur.tagName === "LI" || cur.tagName === "ARTICLE" || cls.indexOf("card") !== -1 || cls.indexOf("auth") !== -1 || cls.indexOf("file") !== -1 || cls.indexOf("row") !== -1) {
+      var tag = (cur.tagName || "").toUpperCase();
+      var isCardLike = tag === "TR" || tag === "LI" || tag === "ARTICLE" || tag === "SECTION" ||
+        cls.indexOf("card") !== -1 || cls.indexOf("auth") !== -1 || cls.indexOf("file") !== -1 ||
+        cls.indexOf("row") !== -1 || cls.indexOf("item") !== -1;
+      if (isCardLike && isSafeRowContainer(cur) && markerCountInElement(cur, markers) === 1) {
         return cur;
       }
       cur = cur.parentElement;
       if (!cur || cur === document.body) break;
     }
-    return node;
+    return marker;
   }
 
   function warningText(text) {
@@ -799,16 +836,19 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
 
     var mode = currentMode();
     var seen = new Set();
-    var candidates = rowCandidateNodes();
+    var markers = markerNodes();
     clearRowVisibility();
 
-    for (var i = 0; i < candidates.length; i++) {
-      var node = candidates[i];
-      var text = (node.innerText || node.textContent || "");
-      var norm = normalize(text);
-      if (!isAuthRowText(norm)) continue;
+    if (markers.length === 0) {
+      return;
+    }
 
-      var row = resolveRowRoot(node);
+    for (var i = 0; i < markers.length; i++) {
+      var marker = markers[i];
+      var text = (marker.innerText || marker.textContent || "");
+      var norm = normalize(text);
+
+      var row = resolveRowRoot(marker, markers);
       if (!row || seen.has(row)) continue;
       seen.add(row);
       row.setAttribute(ROW_ATTR, "1");
