@@ -41,6 +41,62 @@ import (
 
 var lastRefreshKeys = []string{"last_refresh", "lastRefresh", "last_refreshed_at", "lastRefreshedAt"}
 
+func warningFilterEnabled(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	for _, key := range []string{"health_status", "health"} {
+		value := strings.ToLower(strings.TrimSpace(c.Query(key)))
+		if value == "warning" || value == "warn" || value == "1" || value == "true" || value == "yes" || value == "on" {
+			return true
+		}
+	}
+	return false
+}
+
+func authHasWarning(auth *coreauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	if auth.Unavailable {
+		return true
+	}
+	status := strings.ToLower(strings.TrimSpace(string(auth.Status)))
+	if status == string(coreauth.StatusError) || status == string(coreauth.StatusUnknown) {
+		return true
+	}
+	msg := strings.ToLower(strings.TrimSpace(auth.StatusMessage))
+	if msg != "" {
+		needles := []string{
+			"warning",
+			"error",
+			"invalid",
+			"invalid_request_error",
+			"token_invalidated",
+			"unauthorized",
+			"401",
+			"payment_required",
+			"quota",
+			"request failed",
+		}
+		for _, needle := range needles {
+			if strings.Contains(msg, needle) {
+				return true
+			}
+		}
+	}
+	if auth.LastError != nil {
+		if auth.LastError.HTTPStatus >= 400 {
+			return true
+		}
+		lastErrText := strings.ToLower(strings.TrimSpace(auth.LastError.Message + " " + auth.LastError.Code))
+		if strings.Contains(lastErrText, "token_invalidated") || strings.Contains(lastErrText, "invalid_request_error") || strings.Contains(lastErrText, "401") {
+			return true
+		}
+	}
+	return false
+}
+
 const (
 	anthropicCallbackPort   = 54545
 	geminiCallbackPort      = 8085
@@ -257,8 +313,12 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		return
 	}
 	auths := h.authManager.List()
+	warningOnly := warningFilterEnabled(c)
 	files := make([]gin.H, 0, len(auths))
 	for _, auth := range auths {
+		if warningOnly && !authHasWarning(auth) {
+			continue
+		}
 		if entry := h.buildAuthFileEntry(auth); entry != nil {
 			files = append(files, entry)
 		}
@@ -384,6 +444,11 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		"runtime_only":   runtimeOnly,
 		"source":         "memory",
 		"size":           int64(0),
+	}
+	if authHasWarning(auth) {
+		entry["health_status"] = "warning"
+	} else {
+		entry["health_status"] = "healthy"
 	}
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email

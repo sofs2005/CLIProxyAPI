@@ -698,11 +698,9 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
   var STYLE_ID = "cpa-auth-warning-filter-style";
   var ROOT_ID = "cpa-auth-warning-filter-root";
   var SELECT_ID = "cpa-auth-warning-filter-select";
-  var ROW_ATTR = "data-cpa-warning-filter-row";
-  var HIDDEN_ATTR = "data-cpa-warning-filter-hidden";
+  var STORAGE_KEY = "cpa_auth_warning_filter_mode";
   var isZh = (document.documentElement && (document.documentElement.lang || "").toLowerCase().indexOf("zh") === 0);
   var ZH_HEALTH = "\u5065\u5eb7\u72b6\u6001";
-  var ZH_REFRESH = "\u6700\u8fd1\u5237\u65b0";
   var ZH_WARNING = "\u8b66\u544a";
 
   function ensureStyle() {
@@ -727,7 +725,11 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     var select = document.createElement("select");
     select.id = SELECT_ID;
     select.innerHTML = '<option value="all">'+(isZh ? "\u5168\u90e8" : "All")+'</option><option value="warning">'+(isZh ? ZH_WARNING : "Warning")+'</option>';
-    select.addEventListener("change", scheduleApply);
+    select.value = getMode();
+    select.addEventListener("change", function () {
+      setMode(select.value || "all");
+      triggerRefresh();
+    });
 
     root.appendChild(label);
     root.appendChild(select);
@@ -739,170 +741,134 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     return (window.location.hash || "").indexOf("/auth-files") !== -1;
   }
 
-  function normalize(text) {
-    return (text || "").replace(/\s+/g, " ").trim().toLowerCase();
-  }
-
-  function markerNodes() {
-    var candidates = document.querySelectorAll("div,li,tr,article,section");
-    var result = [];
-    for (var i = 0; i < candidates.length; i++) {
-      var node = candidates[i];
-      var text = (node.innerText || node.textContent || "");
-      var norm = normalize(text);
-      if (isAuthRowText(norm)) {
-        result.push(node);
-      }
-    }
-    return result;
-  }
-
-  function isAuthRowText(text) {
-    var zh = text.indexOf(normalize(ZH_HEALTH)) !== -1 && text.indexOf(normalize(ZH_REFRESH)) !== -1;
-    var en = text.indexOf("health status") !== -1 && text.indexOf("last refresh") !== -1;
-    return zh || en;
-  }
-
-  function isSafeRowContainer(el) {
-    if (!el || el === document.body || el === document.documentElement) return false;
-    var tag = (el.tagName || "").toUpperCase();
-    if (tag === "BODY" || tag === "HTML" || tag === "MAIN") return false;
-    var id = ((el.id || "") + "").toLowerCase();
-    if (id === "app" || id === "root" || id === "__next") return false;
-    if (el.childElementCount > 80) return false;
-    var textLength = ((el.innerText || el.textContent || "") + "").length;
-    if (textLength > 5000) return false;
-    if (el.querySelector && el.querySelector("header,nav,aside")) return false;
-    if (el.getBoundingClientRect) {
-      var rect = el.getBoundingClientRect();
-      if (rect && rect.width >= window.innerWidth * 0.9 && rect.height >= window.innerHeight * 0.8) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  function markerCountInElement(el, markers) {
-    var count = 0;
-    for (var i = 0; i < markers.length; i++) {
-      if (el.contains(markers[i])) {
-        count++;
-        if (count > 1) return count;
-      }
-    }
-    return count;
-  }
-
-  function resolveRowRoot(marker, markers) {
-    var cur = marker ? marker.parentElement : null;
-    for (var i = 0; i < 10 && cur && cur.parentElement; i++) {
-      var cls = ((cur.className || "") + "").toLowerCase();
-      var tag = (cur.tagName || "").toUpperCase();
-      var isCardLike = tag === "TR" || tag === "LI" || tag === "ARTICLE" || tag === "DIV" ||
-        cls.indexOf("card") !== -1 || cls.indexOf("auth") !== -1 || cls.indexOf("file") !== -1 ||
-        cls.indexOf("row") !== -1 || cls.indexOf("item") !== -1 || cls.indexOf("entry") !== -1;
-      if (isCardLike && isSafeRowContainer(cur) && markerCountInElement(cur, markers) === 1) {
-        return cur;
-      }
-      cur = cur.parentElement;
-      if (!cur || cur === document.body) break;
-    }
-    return null;
-  }
-
-  function warningText(text) {
-    var zhNeedle = normalize(ZH_HEALTH + ": " + ZH_WARNING);
-    return text.indexOf(zhNeedle) !== -1 ||
-      text.indexOf("health status: warning") !== -1 ||
-      text.indexOf("token_invalidated") !== -1 ||
-      text.indexOf('"status": 401') !== -1 ||
-      text.indexOf("status 401") !== -1;
-  }
-
-  function currentMode() {
-    var select = document.getElementById(SELECT_ID);
-    return select ? select.value : "all";
-  }
-
-  function clearRowVisibility() {
-    var rows = document.querySelectorAll("[" + ROW_ATTR + "='1']");
-    for (var i = 0; i < rows.length; i++) {
-      rows[i].style.display = "";
-      rows[i].removeAttribute(HIDDEN_ATTR);
+  function getMode() {
+    try {
+      var mode = (sessionStorage.getItem(STORAGE_KEY) || "all").toLowerCase();
+      return mode === "warning" ? "warning" : "all";
+    } catch (e) {
+      return "all";
     }
   }
 
-  function applyFilter() {
-    var root = ensureControl();
-    if (!isAuthFilesRoute()) {
-      root.style.display = "none";
-      clearRowVisibility();
-      return;
+  function setMode(mode) {
+    try {
+      sessionStorage.setItem(STORAGE_KEY, mode === "warning" ? "warning" : "all");
+    } catch (e) {
+      // ignore
     }
-    root.style.display = "inline-flex";
+  }
 
-    var mode = currentMode();
-    var seen = new Set();
-    var markers = markerNodes();
-    var hiddenThisRound = [];
-    clearRowVisibility();
-
-    if (markers.length === 0) {
-      return;
+  function normalizeURL(rawUrl) {
+    try {
+      return new URL(rawUrl, window.location.origin);
+    } catch (e) {
+      return null;
     }
+  }
 
-    for (var i = 0; i < markers.length; i++) {
-      var marker = markers[i];
-      var text = (marker.innerText || marker.textContent || "");
-      var norm = normalize(text);
+  function shouldRewrite(urlObj) {
+    if (!urlObj) return false;
+    var p = (urlObj.pathname || "").toLowerCase();
+    return p.indexOf("/v0/management/auth-files") !== -1 && p.indexOf("/models") === -1;
+  }
 
-      var row = resolveRowRoot(marker, markers);
-      if (!row || seen.has(row)) continue;
-      seen.add(row);
-      row.setAttribute(ROW_ATTR, "1");
-
-      if (mode === "warning" && !warningText(norm)) {
-        row.style.display = "none";
-        row.setAttribute(HIDDEN_ATTR, "1");
-        hiddenThisRound.push(row);
-      }
+  function rewriteAuthFilesURL(rawUrl) {
+    var urlObj = normalizeURL(rawUrl);
+    if (!shouldRewrite(urlObj)) {
+      return rawUrl;
     }
+    var mode = getMode();
+    if (mode === "warning") {
+      urlObj.searchParams.set("health_status", "warning");
+    } else {
+      urlObj.searchParams.delete("health_status");
+    }
+    if (/^https?:\/\//i.test(rawUrl || "")) {
+      return urlObj.toString();
+    }
+    return urlObj.pathname + (urlObj.search || "") + (urlObj.hash || "");
+  }
 
-    if (mode === "warning" && hiddenThisRound.length > 0) {
-      var visibleText = normalize((document.body && document.body.innerText) || "");
-      if (visibleText.length < 40) {
-        for (var k = 0; k < hiddenThisRound.length; k++) {
-          hiddenThisRound[k].style.display = "";
-          hiddenThisRound[k].removeAttribute(HIDDEN_ATTR);
+  function patchFetch() {
+    if (typeof window.fetch !== "function") return;
+    var originalFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      try {
+        if (typeof input === "string") {
+          input = rewriteAuthFilesURL(input);
+        } else if (input && input.url) {
+          var rewritten = rewriteAuthFilesURL(input.url);
+          if (rewritten !== input.url) {
+            input = new Request(rewritten, input);
+          }
         }
+      } catch (e) {
+        // ignore patch failure
+      }
+      return originalFetch(input, init);
+    };
+  }
+
+  function patchXHR() {
+    if (!window.XMLHttpRequest || !window.XMLHttpRequest.prototype) return;
+    var proto = window.XMLHttpRequest.prototype;
+    var originalOpen = proto.open;
+    proto.open = function (method, url) {
+      try {
+        if (typeof url === "string") {
+          url = rewriteAuthFilesURL(url);
+        }
+      } catch (e) {
+        // ignore patch failure
+      }
+      return originalOpen.apply(this, [method, url].concat([].slice.call(arguments, 2)));
+    };
+  }
+
+  function showOrHideControl() {
+    var root = ensureControl();
+    root.style.display = isAuthFilesRoute() ? "inline-flex" : "none";
+    var select = document.getElementById(SELECT_ID);
+    if (select) {
+      var mode = getMode();
+      if (select.value !== mode) {
+        select.value = mode;
       }
     }
   }
 
-  var pending = false;
-  function scheduleApply() {
-    if (pending) return;
-    pending = true;
-    window.requestAnimationFrame(function () {
-      pending = false;
-      applyFilter();
-    });
+  function triggerRefresh() {
+    if (!isAuthFilesRoute()) return;
+    var nodes = document.querySelectorAll("button,[role='button'],a");
+    for (var i = 0; i < nodes.length; i++) {
+      var text = ((nodes[i].innerText || nodes[i].textContent || "") + "").toLowerCase();
+      if (text.indexOf("refresh") !== -1 || text.indexOf("\u5237\u65b0") !== -1) {
+        nodes[i].click();
+        return;
+      }
+    }
+    try {
+      window.dispatchEvent(new Event("hashchange"));
+      setTimeout(function () { window.dispatchEvent(new Event("hashchange")); }, 60);
+      setTimeout(function () {
+        if (isAuthFilesRoute()) {
+          window.location.reload();
+        }
+      }, 180);
+    } catch (e) {
+      // ignore
+    }
   }
 
-  window.addEventListener("hashchange", scheduleApply, true);
-  window.addEventListener("popstate", scheduleApply, true);
-
-  var observer = new MutationObserver(function () {
-    if (isAuthFilesRoute() && currentMode() === "warning") {
-      scheduleApply();
-    }
-  });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  patchFetch();
+  patchXHR();
+  window.addEventListener("hashchange", showOrHideControl, true);
+  window.addEventListener("popstate", showOrHideControl, true);
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", scheduleApply, { once: true });
+    document.addEventListener("DOMContentLoaded", showOrHideControl, { once: true });
   } else {
-    scheduleApply();
+    showOrHideControl();
   }
 })();
 </script>`)
