@@ -691,6 +691,7 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	}
 
 	patched := injectAuthFilesWarningFilterPatch(data)
+	patched = injectModelPriceDropdownClipPatch(patched)
 	c.Data(http.StatusOK, "text/html; charset=utf-8", patched)
 }
 
@@ -881,6 +882,215 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
   } else {
     showOrHideControl();
   }
+})();
+</script>`)
+
+	lower := bytes.ToLower(html)
+	bodyClose := []byte("</body>")
+	if idx := bytes.LastIndex(lower, bodyClose); idx >= 0 {
+		out := make([]byte, 0, len(html)+len(patch))
+		out = append(out, html[:idx]...)
+		out = append(out, patch...)
+		out = append(out, html[idx:]...)
+		return out
+	}
+	return append(html, patch...)
+}
+
+func injectModelPriceDropdownClipPatch(html []byte) []byte {
+	const marker = "__cpa_model_price_dropdown_clip_patch__"
+	if len(html) == 0 || bytes.Contains(html, []byte(marker)) {
+		return html
+	}
+
+	patch := []byte(`<script>
+(function () {
+  var MARKER = "__cpa_model_price_dropdown_clip_patch__";
+  if (window[MARKER]) return;
+  window[MARKER] = true;
+
+  var SECTION_ZH = "\u6a21\u578b\u4ef7\u683c\u8bbe\u7f6e";
+  var SECTION_EN = "model price settings";
+  var LABEL_ZH = "\u6a21\u578b\u540d\u79f0";
+  var LABEL_EN = "model name";
+
+  function normalizeText(text) {
+    return (text || "").toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  function matchesNeedle(text, needles) {
+    var value = normalizeText(text);
+    if (!value) return false;
+    for (var i = 0; i < needles.length; i++) {
+      if (value.indexOf(normalizeText(needles[i])) !== -1) return true;
+    }
+    return false;
+  }
+
+  function readShortText(el) {
+    if (!el) return "";
+    var text = (el.innerText || el.textContent || "").trim();
+    if (text.length > 120) return "";
+    return text;
+  }
+
+  function elementHasNeedle(el, needles) {
+    return matchesNeedle(readShortText(el), needles);
+  }
+
+  function hasComboLike(el) {
+    if (!el || !el.querySelector) return false;
+    return !!el.querySelector("select,[role='combobox'],input[list],button[aria-haspopup='listbox'],button[aria-expanded]");
+  }
+
+  function findTextElement(needles, root) {
+    var scope = root || document;
+    var nodes = scope.querySelectorAll("h1,h2,h3,h4,h5,h6,label,legend,span,div,p,strong,th,td");
+    for (var i = 0; i < nodes.length; i++) {
+      if (elementHasNeedle(nodes[i], needles)) {
+        return nodes[i];
+      }
+    }
+    return null;
+  }
+
+  function closestContainer(node) {
+    var current = node;
+    for (var i = 0; i < 8 && current; i++) {
+      if (current.matches && current.matches("section,article,form,fieldset,.card,.panel,[class*='card'],[class*='panel']")) {
+        return current;
+      }
+      if (hasComboLike(current)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return node ? node.parentElement : null;
+  }
+
+  function findModelPriceSection() {
+    var sectionNeedles = [SECTION_ZH, SECTION_EN];
+    var labelNeedles = [LABEL_ZH, LABEL_EN];
+
+    var heading = findTextElement(sectionNeedles, document);
+    if (heading) {
+      return closestContainer(heading);
+    }
+
+    var label = findTextElement(labelNeedles, document);
+    if (!label) return null;
+    var current = label;
+    for (var i = 0; i < 8 && current; i++) {
+      if (matchesNeedle(current.textContent || "", sectionNeedles)) {
+        return current;
+      }
+      if (hasComboLike(current)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return closestContainer(label);
+  }
+
+  function findModelNameRow(section) {
+    if (!section) return null;
+    var label = findTextElement([LABEL_ZH, LABEL_EN], section);
+    if (!label) return null;
+    var current = label;
+    for (var i = 0; i < 6 && current; i++) {
+      if (hasComboLike(current)) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return label.parentElement;
+  }
+
+  function relaxNode(node, minZIndex) {
+    if (!node || !node.style || !window.getComputedStyle) return;
+    var style = window.getComputedStyle(node);
+    var overflow = ((style.overflow || "") + " " + (style.overflowX || "") + " " + (style.overflowY || "")).toLowerCase();
+    if (overflow.indexOf("hidden") !== -1 || overflow.indexOf("clip") !== -1 || overflow.indexOf("auto") !== -1 || overflow.indexOf("scroll") !== -1) {
+      node.style.setProperty("overflow", "visible", "important");
+      node.style.setProperty("overflow-x", "visible", "important");
+      node.style.setProperty("overflow-y", "visible", "important");
+    }
+    if (style.position === "static") {
+      node.style.setProperty("position", "relative", "important");
+    }
+    if (minZIndex > 0) {
+      var z = parseInt(style.zIndex, 10);
+      if (style.zIndex === "auto" || isNaN(z) || z < minZIndex) {
+        node.style.setProperty("z-index", String(minZIndex), "important");
+      }
+    }
+  }
+
+  function relaxChain(start, depth, baseZ) {
+    var current = start;
+    for (var i = 0; i < depth && current && current !== document.body; i++) {
+      relaxNode(current, baseZ + i);
+      current = current.parentElement;
+    }
+  }
+
+  function isUsageRoute() {
+    var hash = normalizeText(window.location.hash || "");
+    return hash.indexOf("/usage") !== -1 || hash.indexOf("usage") !== -1 || hash.indexOf("\u7edf\u8ba1") !== -1;
+  }
+
+  function patchModelPriceDropdown() {
+    if (!isUsageRoute()) return;
+    var section = findModelPriceSection();
+    if (!section) return;
+
+    relaxChain(section, 10, 1200);
+
+    var row = findModelNameRow(section);
+    if (!row) return;
+    relaxChain(row, 6, 1300);
+
+    var trigger = row.querySelector("select,[role='combobox'],input[list],button[aria-haspopup='listbox'],button[aria-expanded='true']");
+    if (trigger && trigger.style) {
+      trigger.style.setProperty("position", "relative", "important");
+      trigger.style.setProperty("z-index", "1400", "important");
+    }
+  }
+
+  var scheduled = false;
+  function schedulePatch() {
+    if (scheduled) return;
+    scheduled = true;
+    setTimeout(function () {
+      scheduled = false;
+      patchModelPriceDropdown();
+    }, 30);
+  }
+
+  function setupObserver() {
+    if (!window.MutationObserver || !document.body) return;
+    var observer = new MutationObserver(function () {
+      schedulePatch();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  window.addEventListener("hashchange", schedulePatch, true);
+  window.addEventListener("popstate", schedulePatch, true);
+  window.addEventListener("resize", schedulePatch, true);
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () {
+      setupObserver();
+      schedulePatch();
+    }, { once: true });
+  } else {
+    setupObserver();
+    schedulePatch();
+  }
+
+  setTimeout(schedulePatch, 300);
+  setTimeout(schedulePatch, 1200);
 })();
 </script>`)
 
