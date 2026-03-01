@@ -85,10 +85,51 @@ func TestInjectModelPriceDropdownClipPatch_AppendsWhenBodyMissing(t *testing.T) 
 	}
 }
 
+func TestInjectUsageWarmupPatch_InsertsBeforeBodyClose(t *testing.T) {
+	input := []byte("<html><body><div>content</div></body></html>")
+	out := injectUsageWarmupPatch(input)
+	result := string(out)
+
+	if !strings.Contains(result, "__cpa_usage_warmup_patch__") {
+		t.Fatal("expected usage warmup patch marker in output")
+	}
+
+	idxBody := strings.LastIndex(result, "</body>")
+	idxMarker := strings.Index(result, "__cpa_usage_warmup_patch__")
+	if idxBody < 0 || idxMarker < 0 || idxMarker > idxBody {
+		t.Fatal("expected usage warmup patch injected before </body>")
+	}
+}
+
+func TestInjectUsageWarmupPatch_OnlyInjectsOnce(t *testing.T) {
+	input := []byte("<html><body><div>content</div></body></html>")
+	first := injectUsageWarmupPatch(input)
+	second := injectUsageWarmupPatch(first)
+	result := string(second)
+
+	if strings.Count(result, "__cpa_usage_warmup_patch__") != 1 {
+		t.Fatal("expected usage warmup patch marker to appear exactly once")
+	}
+}
+
+func TestInjectUsageWarmupPatch_AppendsWhenBodyMissing(t *testing.T) {
+	input := []byte("<html><div>content</div></html>")
+	out := injectUsageWarmupPatch(input)
+	result := string(out)
+
+	if !strings.Contains(result, "__cpa_usage_warmup_patch__") {
+		t.Fatal("expected usage warmup patch marker in output")
+	}
+	if !strings.HasSuffix(result, "</script>") {
+		t.Fatal("expected usage warmup patch appended to document end when </body> is missing")
+	}
+}
+
 func TestManagementPatchChain_ContainsBothMarkers(t *testing.T) {
 	input := []byte("<html><body><div>content</div></body></html>")
 	out := injectAuthFilesWarningFilterPatch(input)
 	out = injectModelPriceDropdownClipPatch(out)
+	out = injectUsageWarmupPatch(out)
 	result := string(out)
 
 	if !strings.Contains(result, "__cpa_auth_warning_filter_patch__") {
@@ -96,5 +137,8 @@ func TestManagementPatchChain_ContainsBothMarkers(t *testing.T) {
 	}
 	if !strings.Contains(result, "__cpa_model_price_dropdown_clip_patch__") {
 		t.Fatal("expected model price dropdown patch marker in chained output")
+	}
+	if !strings.Contains(result, "__cpa_usage_warmup_patch__") {
+		t.Fatal("expected usage warmup patch marker in chained output")
 	}
 }

@@ -2,6 +2,7 @@ package management
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,29 +23,90 @@ type usageImportPayload struct {
 	Usage   usage.StatisticsSnapshot `json:"usage"`
 }
 
+type usageSnapshotCacheEntry struct {
+	snapshot usage.StatisticsSnapshot
+	expires  time.Time
+}
+
+const usageSnapshotCacheTTL = 20 * time.Second
+
 // GetUsageStatistics returns the in-memory request statistics snapshot.
 func (h *Handler) GetUsageStatistics(c *gin.Context) {
 	var snapshot usage.StatisticsSnapshot
 	detailLimit := parseUsageDetailLimit(c)
-	if h != nil && h.usageStats != nil {
-		snapshot = h.usageStats.SnapshotWithDetailLimit(detailLimit)
+	windowHours := parseUsageWindowHours(c)
+	cacheKey := usageSnapshotCacheKey(windowHours, detailLimit)
+	if cached, ok := h.getUsageSnapshotFromCache(cacheKey); ok {
+		snapshot = cached
+	} else if h != nil && h.usageStats != nil {
+		snapshot = h.usageStats.SnapshotRecentWithDetailLimit(windowHours, detailLimit)
+		h.storeUsageSnapshotCache(cacheKey, snapshot)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"usage":           snapshot,
 		"failed_requests": snapshot.FailureCount,
 		"details_mode":    usageDetailsMode(detailLimit),
+		"window_hours":    windowHours,
 	})
+}
+
+func usageSnapshotCacheKey(windowHours, detailLimit int) string {
+	return fmt.Sprintf("w:%d|d:%d", windowHours, detailLimit)
+}
+
+func (h *Handler) getUsageSnapshotFromCache(key string) (usage.StatisticsSnapshot, bool) {
+	if h == nil {
+		return usage.StatisticsSnapshot{}, false
+	}
+	h.usageCacheMu.Lock()
+	defer h.usageCacheMu.Unlock()
+	entry, ok := h.usageCache[key]
+	if !ok {
+		return usage.StatisticsSnapshot{}, false
+	}
+	if time.Now().After(entry.expires) {
+		delete(h.usageCache, key)
+		return usage.StatisticsSnapshot{}, false
+	}
+	return entry.snapshot, true
+}
+
+func (h *Handler) storeUsageSnapshotCache(key string, snapshot usage.StatisticsSnapshot) {
+	if h == nil {
+		return
+	}
+	h.usageCacheMu.Lock()
+	h.usageCache[key] = usageSnapshotCacheEntry{
+		snapshot: snapshot,
+		expires:  time.Now().Add(usageSnapshotCacheTTL),
+	}
+	h.usageCacheMu.Unlock()
+}
+
+func (h *Handler) clearUsageSnapshotCache() {
+	if h == nil {
+		return
+	}
+	h.usageCacheMu.Lock()
+	h.usageCache = make(map[string]usageSnapshotCacheEntry)
+	h.usageCacheMu.Unlock()
 }
 
 func parseUsageDetailLimit(c *gin.Context) int {
 	if c == nil {
+		return -1
+	}
+	if isTruthy(c.Query("compact")) {
 		return 0
 	}
-	if !isTruthy(c.Query("details")) {
+	detailsRaw, detailsProvided := c.GetQuery("details")
+	if detailsProvided && !isTruthy(detailsRaw) {
 		return 0
 	}
+
 	rawLimit := strings.TrimSpace(c.Query("detail_limit"))
 	if rawLimit == "" {
+		// Keep backward compatibility: default response includes full details.
 		return -1
 	}
 	limit, err := strconv.Atoi(rawLimit)
@@ -75,6 +137,29 @@ func usageDetailsMode(detailLimit int) string {
 	default:
 		return "limited"
 	}
+}
+
+func parseUsageWindowHours(c *gin.Context) int {
+	if c == nil {
+		return 0
+	}
+	raw := strings.TrimSpace(c.Query("window_hours"))
+	if raw == "" {
+		raw = strings.TrimSpace(c.Query("hours"))
+	}
+	if raw == "" {
+		return 0
+	}
+	raw = strings.TrimSuffix(strings.ToLower(raw), "h")
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0
+	}
+	maxHours := 24 * 365
+	if value > maxHours {
+		return maxHours
+	}
+	return value
 }
 
 // ExportUsageStatistics returns a complete usage snapshot for backup/migration.
@@ -114,6 +199,7 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 	}
 
 	result := h.usageStats.MergeSnapshot(payload.Usage)
+	h.clearUsageSnapshotCache()
 	snapshot := h.usageStats.SnapshotWithDetailLimit(0)
 	c.JSON(http.StatusOK, gin.H{
 		"added":           result.Added,

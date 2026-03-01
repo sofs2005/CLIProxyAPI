@@ -287,3 +287,51 @@ func TestSnapshotWithDetailLimit(t *testing.T) {
 		t.Fatalf("expected full snapshot details=2, got %d", len(modelFull.Details))
 	}
 }
+
+func TestSnapshotRecentWithDetailLimit(t *testing.T) {
+	stats := NewRequestStatistics()
+	SetStatisticsEnabled(true)
+	now := time.Now().UTC()
+
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "api-r",
+		Model:       "model-r",
+		RequestedAt: now.Add(-3 * time.Hour),
+		Detail: coreusage.Detail{
+			InputTokens:  6,
+			OutputTokens: 4,
+		},
+	})
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "api-r",
+		Model:       "model-r",
+		RequestedAt: now.Add(-40 * time.Hour),
+		Detail: coreusage.Detail{
+			InputTokens:  3,
+			OutputTokens: 2,
+		},
+	})
+
+	snapshot := stats.SnapshotRecentWithDetailLimit(24, -1)
+	if snapshot.TotalRequests != 1 {
+		t.Fatalf("expected recent total_requests=1, got %d", snapshot.TotalRequests)
+	}
+	if snapshot.TotalTokens != 10 {
+		t.Fatalf("expected recent total_tokens=10, got %d", snapshot.TotalTokens)
+	}
+	if snapshot.SuccessCount != 1 || snapshot.FailureCount != 0 {
+		t.Fatalf("expected success/failure=1/0, got %d/%d", snapshot.SuccessCount, snapshot.FailureCount)
+	}
+
+	api := snapshot.APIs["api-r"]
+	model := api.Models["model-r"]
+	if model.TotalRequests != 1 || len(model.Details) != 1 {
+		t.Fatalf("expected one recent model detail, got requests=%d details=%d", model.TotalRequests, len(model.Details))
+	}
+
+	compact := stats.SnapshotRecentWithDetailLimit(24, 0)
+	modelCompact := compact.APIs["api-r"].Models["model-r"]
+	if len(modelCompact.Details) != 0 {
+		t.Fatalf("expected compact recent snapshot without details, got %d", len(modelCompact.Details))
+	}
+}

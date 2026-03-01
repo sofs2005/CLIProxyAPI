@@ -248,6 +248,16 @@ func (s *RequestStatistics) SnapshotWithDetailLimit(detailLimit int) StatisticsS
 	return s.snapshotWithDetailLimit(detailLimit)
 }
 
+// SnapshotRecentWithDetailLimit returns a recent time-window snapshot.
+// hours <= 0 falls back to the full snapshot semantics.
+func (s *RequestStatistics) SnapshotRecentWithDetailLimit(hours int, detailLimit int) StatisticsSnapshot {
+	if hours <= 0 {
+		return s.snapshotWithDetailLimit(detailLimit)
+	}
+	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	return s.snapshotSince(since, detailLimit)
+}
+
 func (s *RequestStatistics) snapshotWithDetailLimit(detailLimit int) StatisticsSnapshot {
 	result := StatisticsSnapshot{}
 	if s == nil {
@@ -306,6 +316,84 @@ func (s *RequestStatistics) snapshotWithDetailLimit(detailLimit int) StatisticsS
 	for hour, v := range s.tokensByHour {
 		key := formatHour(hour)
 		result.TokensByHour[key] = v
+	}
+
+	return result
+}
+
+func (s *RequestStatistics) snapshotSince(since time.Time, detailLimit int) StatisticsSnapshot {
+	result := StatisticsSnapshot{}
+	if s == nil {
+		return result
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result.APIs = make(map[string]APISnapshot)
+	result.RequestsByDay = make(map[string]int64)
+	result.RequestsByHour = make(map[string]int64)
+	result.TokensByDay = make(map[string]int64)
+	result.TokensByHour = make(map[string]int64)
+
+	for apiName, stats := range s.apis {
+		apiSnapshot := APISnapshot{
+			Models: make(map[string]ModelSnapshot),
+		}
+		for modelName, modelStatsValue := range stats.Models {
+			modelSnapshot := ModelSnapshot{}
+			filteredDetails := make([]RequestDetail, 0)
+
+			for _, detail := range modelStatsValue.Details {
+				timestamp := detail.Timestamp
+				if timestamp.IsZero() || timestamp.Before(since) {
+					continue
+				}
+				tokens := normaliseTokenStats(detail.Tokens)
+				detail.Tokens = tokens
+
+				modelSnapshot.TotalRequests++
+				modelSnapshot.TotalTokens += tokens.TotalTokens
+				modelSnapshot.InputTokens += tokens.InputTokens
+				modelSnapshot.OutputTokens += tokens.OutputTokens
+				modelSnapshot.ReasoningTokens += tokens.ReasoningTokens
+				modelSnapshot.CachedTokens += tokens.CachedTokens
+
+				result.TotalRequests++
+				result.TotalTokens += tokens.TotalTokens
+				if detail.Failed {
+					result.FailureCount++
+				} else {
+					result.SuccessCount++
+				}
+
+				dayKey := timestamp.Format("2006-01-02")
+				hourKey := formatHour(timestamp.Hour())
+				result.RequestsByDay[dayKey]++
+				result.RequestsByHour[hourKey]++
+				result.TokensByDay[dayKey] += tokens.TotalTokens
+				result.TokensByHour[hourKey] += tokens.TotalTokens
+
+				if detailLimit != 0 {
+					filteredDetails = append(filteredDetails, detail)
+				}
+			}
+
+			if modelSnapshot.TotalRequests == 0 {
+				continue
+			}
+			if detailLimit != 0 {
+				modelSnapshot.Details = cloneDetailsWithLimit(filteredDetails, detailLimit)
+			}
+
+			apiSnapshot.TotalRequests += modelSnapshot.TotalRequests
+			apiSnapshot.TotalTokens += modelSnapshot.TotalTokens
+			apiSnapshot.Models[modelName] = modelSnapshot
+		}
+
+		if len(apiSnapshot.Models) > 0 {
+			result.APIs[apiName] = apiSnapshot
+		}
 	}
 
 	return result

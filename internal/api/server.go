@@ -690,6 +690,7 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 
 	patched := injectAuthFilesWarningFilterPatch(data)
 	patched = injectModelPriceDropdownClipPatch(patched)
+	patched = injectUsageWarmupPatch(patched)
 	c.Data(http.StatusOK, "text/html; charset=utf-8", patched)
 }
 
@@ -1122,6 +1123,194 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
 
   setTimeout(handleRouteChange, 300);
   setTimeout(handleRouteChange, 1200);
+})();
+</script>`)
+
+	lower := bytes.ToLower(html)
+	bodyClose := []byte("</body>")
+	if idx := bytes.LastIndex(lower, bodyClose); idx >= 0 {
+		out := make([]byte, 0, len(html)+len(patch))
+		out = append(out, html[:idx]...)
+		out = append(out, patch...)
+		out = append(out, html[idx:]...)
+		return out
+	}
+	return append(html, patch...)
+}
+
+func injectUsageWarmupPatch(html []byte) []byte {
+	const marker = "__cpa_usage_warmup_patch__"
+	if len(html) == 0 || bytes.Contains(html, []byte(marker)) {
+		return html
+	}
+
+	patch := []byte(`<script>
+(function () {
+  var MARKER = "__cpa_usage_warmup_patch__";
+  if (window[MARKER]) return;
+  window[MARKER] = true;
+
+  function isUsageRoute() {
+    var hash = (window.location.hash || "").toLowerCase();
+    return hash.indexOf("/usage") !== -1 || hash.indexOf("usage") !== -1 || hash.indexOf("统计") !== -1;
+  }
+
+  function toURL(raw) {
+    try {
+      return new URL(raw, window.location.origin);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function isUsageAPI(urlObj) {
+    return !!urlObj && /\/v0\/management\/usage$/i.test(urlObj.pathname || "");
+  }
+
+  function hasWindowQuery(urlObj) {
+    return urlObj.searchParams.has("window_hours") || urlObj.searchParams.has("hours");
+  }
+
+  function build24hURL(urlObj) {
+    var next = new URL(urlObj.toString());
+    next.searchParams.set("window_hours", "24");
+    next.searchParams.set("details", "1");
+    return next;
+  }
+
+  function buildFullURL(urlObj) {
+    var next = new URL(urlObj.toString());
+    next.searchParams.delete("window_hours");
+    next.searchParams.delete("hours");
+    next.searchParams.set("details", "1");
+    return next;
+  }
+
+  var originalFetch = window.fetch;
+
+  var firstUsageRequestDone = false;
+  var warmupPromise = null;
+  var fullCache = null;
+  var fullCacheAt = 0;
+  var fullCacheTTL = 30 * 1000;
+
+  function makeCachedResponse() {
+    if (!fullCache) return null;
+    if (Date.now() - fullCacheAt > fullCacheTTL) return null;
+    return new Response(fullCache.body, {
+      status: fullCache.status,
+      statusText: fullCache.statusText,
+      headers: fullCache.headers
+    });
+  }
+
+  function updateFullCache(resp) {
+    if (!resp || !resp.ok) return Promise.resolve();
+    return resp.clone().text().then(function (body) {
+      fullCache = {
+        status: resp.status,
+        statusText: resp.statusText,
+        headers: Array.from(resp.headers.entries()),
+        body: body
+      };
+      fullCacheAt = Date.now();
+    }).catch(function () {
+      // ignore cache write errors
+    });
+  }
+
+  function prefetchFull(urlObj) {
+    if (typeof originalFetch !== "function") return Promise.resolve();
+    if (warmupPromise) return warmupPromise;
+    var fullURL = buildFullURL(urlObj).toString();
+    warmupPromise = originalFetch.call(window, fullURL, { method: "GET" }).then(function (resp) {
+      return updateFullCache(resp);
+    }).catch(function () {
+      // ignore warmup failures
+    }).finally(function () {
+      warmupPromise = null;
+    });
+    return warmupPromise;
+  }
+
+  if (typeof originalFetch === "function") {
+    window.fetch = function (input, init) {
+      var method = "GET";
+      if (init && typeof init.method === "string") {
+        method = init.method;
+      } else if (input && typeof input === "object" && typeof input.method === "string") {
+        method = input.method;
+      }
+      if ((method || "GET").toUpperCase() !== "GET") {
+        return originalFetch.apply(this, arguments);
+      }
+
+      var rawURL = typeof input === "string" ? input : (input && input.url);
+      var urlObj = toURL(rawURL);
+      if (!isUsageAPI(urlObj) || !isUsageRoute()) {
+        return originalFetch.apply(this, arguments);
+      }
+
+      var hasWindow = hasWindowQuery(urlObj);
+      if (!hasWindow && firstUsageRequestDone) {
+        var cached = makeCachedResponse();
+        if (cached) {
+          return Promise.resolve(cached);
+        }
+      }
+
+      var actualURL = urlObj;
+      if (!hasWindow && !firstUsageRequestDone) {
+        actualURL = build24hURL(urlObj);
+        firstUsageRequestDone = true;
+        prefetchFull(urlObj);
+      } else if (!hasWindow) {
+        prefetchFull(urlObj);
+      }
+
+      var call;
+      if (typeof Request !== "undefined" && input instanceof Request) {
+        call = originalFetch.call(this, new Request(actualURL.toString(), input), init);
+      } else {
+        call = originalFetch.call(this, actualURL.toString(), init);
+      }
+      return call.then(function (resp) {
+        if (!hasWindow) {
+          updateFullCache(resp);
+        }
+        return resp;
+      });
+    };
+  }
+
+  if (typeof XMLHttpRequest !== "undefined" && XMLHttpRequest.prototype && typeof XMLHttpRequest.prototype.open === "function") {
+    var originalXHROpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url) {
+      var upperMethod = (method || "GET").toUpperCase();
+      var rewrittenURL = url;
+      if (upperMethod === "GET") {
+        var urlObj = toURL(url);
+        if (isUsageAPI(urlObj) && isUsageRoute()) {
+          var hasWindow = hasWindowQuery(urlObj);
+          if (!hasWindow && !firstUsageRequestDone) {
+            rewrittenURL = build24hURL(urlObj).toString();
+            firstUsageRequestDone = true;
+            prefetchFull(urlObj);
+          } else if (!hasWindow) {
+            prefetchFull(urlObj);
+          }
+        }
+      }
+      arguments[1] = rewrittenURL;
+      return originalXHROpen.apply(this, arguments);
+    };
+  }
+
+  window.addEventListener("hashchange", function () {
+    if (!isUsageRoute()) {
+      firstUsageRequestDone = false;
+    }
+  }, true);
 })();
 </script>`)
 
