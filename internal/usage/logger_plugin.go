@@ -85,6 +85,10 @@ type apiStats struct {
 type modelStats struct {
 	TotalRequests int64
 	TotalTokens   int64
+	InputTokens   int64
+	OutputTokens  int64
+	ReasoningTokens int64
+	CachedTokens  int64
 	Details       []RequestDetail
 }
 
@@ -130,9 +134,13 @@ type APISnapshot struct {
 
 // ModelSnapshot summarises metrics for a specific model.
 type ModelSnapshot struct {
-	TotalRequests int64           `json:"total_requests"`
-	TotalTokens   int64           `json:"total_tokens"`
-	Details       []RequestDetail `json:"details"`
+	TotalRequests   int64           `json:"total_requests"`
+	TotalTokens     int64           `json:"total_tokens"`
+	InputTokens     int64           `json:"input_tokens"`
+	OutputTokens    int64           `json:"output_tokens"`
+	ReasoningTokens int64           `json:"reasoning_tokens"`
+	CachedTokens    int64           `json:"cached_tokens"`
+	Details         []RequestDetail `json:"details,omitempty"`
 }
 
 var defaultRequestStatistics = NewRequestStatistics()
@@ -222,11 +230,25 @@ func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail
 	}
 	modelStatsValue.TotalRequests++
 	modelStatsValue.TotalTokens += detail.Tokens.TotalTokens
+	modelStatsValue.InputTokens += detail.Tokens.InputTokens
+	modelStatsValue.OutputTokens += detail.Tokens.OutputTokens
+	modelStatsValue.ReasoningTokens += detail.Tokens.ReasoningTokens
+	modelStatsValue.CachedTokens += detail.Tokens.CachedTokens
 	modelStatsValue.Details = append(modelStatsValue.Details, detail)
 }
 
 // Snapshot returns a copy of the aggregated metrics for external consumption.
 func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
+	return s.snapshotWithDetailLimit(-1)
+}
+
+// SnapshotWithDetailLimit returns a snapshot with optional per-model detail records.
+// detailLimit < 0 means all details, 0 means no details, > 0 means latest N details.
+func (s *RequestStatistics) SnapshotWithDetailLimit(detailLimit int) StatisticsSnapshot {
+	return s.snapshotWithDetailLimit(detailLimit)
+}
+
+func (s *RequestStatistics) snapshotWithDetailLimit(detailLimit int) StatisticsSnapshot {
 	result := StatisticsSnapshot{}
 	if s == nil {
 		return result
@@ -248,13 +270,18 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 			Models:        make(map[string]ModelSnapshot, len(stats.Models)),
 		}
 		for modelName, modelStatsValue := range stats.Models {
-			requestDetails := make([]RequestDetail, len(modelStatsValue.Details))
-			copy(requestDetails, modelStatsValue.Details)
-			apiSnapshot.Models[modelName] = ModelSnapshot{
-				TotalRequests: modelStatsValue.TotalRequests,
-				TotalTokens:   modelStatsValue.TotalTokens,
-				Details:       requestDetails,
+			modelSnapshot := ModelSnapshot{
+				TotalRequests:   modelStatsValue.TotalRequests,
+				TotalTokens:     modelStatsValue.TotalTokens,
+				InputTokens:     modelStatsValue.InputTokens,
+				OutputTokens:    modelStatsValue.OutputTokens,
+				ReasoningTokens: modelStatsValue.ReasoningTokens,
+				CachedTokens:    modelStatsValue.CachedTokens,
 			}
+			if detailLimit != 0 {
+				modelSnapshot.Details = cloneDetailsWithLimit(modelStatsValue.Details, detailLimit)
+			}
+			apiSnapshot.Models[modelName] = modelSnapshot
 		}
 		result.APIs[apiName] = apiSnapshot
 	}
@@ -369,6 +396,21 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 	return result
 }
 
+func cloneDetailsWithLimit(details []RequestDetail, detailLimit int) []RequestDetail {
+	if len(details) == 0 || detailLimit == 0 {
+		return nil
+	}
+	if detailLimit < 0 || len(details) <= detailLimit {
+		out := make([]RequestDetail, len(details))
+		copy(out, details)
+		return out
+	}
+	start := len(details) - detailLimit
+	out := make([]RequestDetail, len(details[start:]))
+	copy(out, details[start:])
+	return out
+}
+
 func (s *RequestStatistics) mergeSnapshotAggregates(snapshot StatisticsSnapshot) {
 	s.totalRequests += snapshot.TotalRequests
 	s.successCount += snapshot.SuccessCount
@@ -432,6 +474,10 @@ func (s *RequestStatistics) mergeSnapshotAggregates(snapshot StatisticsSnapshot)
 			}
 			modelStatsValue.TotalRequests += modelSnapshot.TotalRequests
 			modelStatsValue.TotalTokens += modelSnapshot.TotalTokens
+			modelStatsValue.InputTokens += modelSnapshot.InputTokens
+			modelStatsValue.OutputTokens += modelSnapshot.OutputTokens
+			modelStatsValue.ReasoningTokens += modelSnapshot.ReasoningTokens
+			modelStatsValue.CachedTokens += modelSnapshot.CachedTokens
 		}
 	}
 }

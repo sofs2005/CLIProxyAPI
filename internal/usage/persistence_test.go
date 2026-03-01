@@ -82,8 +82,12 @@ func TestMergeSnapshotAggregatesWithoutDetails(t *testing.T) {
 				TotalTokens:   210,
 				Models: map[string]ModelSnapshot{
 					"test-model": {
-						TotalRequests: 7,
-						TotalTokens:   210,
+						TotalRequests:   7,
+						TotalTokens:     210,
+						InputTokens:     120,
+						OutputTokens:    70,
+						ReasoningTokens: 15,
+						CachedTokens:    5,
 					},
 				},
 			},
@@ -138,6 +142,15 @@ func TestMergeSnapshotAggregatesWithoutDetails(t *testing.T) {
 	}
 	if modelSnapshot.TotalRequests != 7 || modelSnapshot.TotalTokens != 210 {
 		t.Fatalf("unexpected model totals: requests=%d tokens=%d", modelSnapshot.TotalRequests, modelSnapshot.TotalTokens)
+	}
+	if modelSnapshot.InputTokens != 120 || modelSnapshot.OutputTokens != 70 || modelSnapshot.ReasoningTokens != 15 || modelSnapshot.CachedTokens != 5 {
+		t.Fatalf(
+			"unexpected model token breakdown: input=%d output=%d reasoning=%d cached=%d",
+			modelSnapshot.InputTokens,
+			modelSnapshot.OutputTokens,
+			modelSnapshot.ReasoningTokens,
+			modelSnapshot.CachedTokens,
+		)
 	}
 }
 
@@ -206,4 +219,71 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("condition not met before timeout")
+}
+
+func TestSnapshotWithDetailLimit(t *testing.T) {
+	stats := NewRequestStatistics()
+	SetStatisticsEnabled(true)
+	base := time.Date(2026, 2, 19, 11, 0, 0, 0, time.UTC)
+
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "api-1",
+		Model:       "model-1",
+		RequestedAt: base,
+		Detail: coreusage.Detail{
+			InputTokens:     10,
+			OutputTokens:    4,
+			ReasoningTokens: 1,
+			CachedTokens:    2,
+		},
+	})
+	stats.Record(context.Background(), coreusage.Record{
+		APIKey:      "api-1",
+		Model:       "model-1",
+		RequestedAt: base.Add(1 * time.Minute),
+		Detail: coreusage.Detail{
+			InputTokens:     8,
+			OutputTokens:    6,
+			ReasoningTokens: 2,
+			CachedTokens:    0,
+		},
+	})
+
+	compact := stats.SnapshotWithDetailLimit(0)
+	api, ok := compact.APIs["api-1"]
+	if !ok {
+		t.Fatal("expected api snapshot for api-1")
+	}
+	model, ok := api.Models["model-1"]
+	if !ok {
+		t.Fatal("expected model snapshot for model-1")
+	}
+	if len(model.Details) != 0 {
+		t.Fatalf("expected details to be omitted, got %d", len(model.Details))
+	}
+	if model.InputTokens != 18 || model.OutputTokens != 10 || model.ReasoningTokens != 3 || model.CachedTokens != 2 {
+		t.Fatalf(
+			"unexpected model token breakdown: input=%d output=%d reasoning=%d cached=%d",
+			model.InputTokens,
+			model.OutputTokens,
+			model.ReasoningTokens,
+			model.CachedTokens,
+		)
+	}
+
+	limited := stats.SnapshotWithDetailLimit(1)
+	apiLimited := limited.APIs["api-1"]
+	modelLimited := apiLimited.Models["model-1"]
+	if len(modelLimited.Details) != 1 {
+		t.Fatalf("expected only latest detail, got %d", len(modelLimited.Details))
+	}
+	if !modelLimited.Details[0].Timestamp.Equal(base.Add(1 * time.Minute)) {
+		t.Fatalf("expected latest detail timestamp, got %s", modelLimited.Details[0].Timestamp)
+	}
+
+	full := stats.Snapshot()
+	modelFull := full.APIs["api-1"].Models["model-1"]
+	if len(modelFull.Details) != 2 {
+		t.Fatalf("expected full snapshot details=2, got %d", len(modelFull.Details))
+	}
 }

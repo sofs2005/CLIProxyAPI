@@ -1038,14 +1038,14 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
   }
 
   function patchModelPriceDropdown() {
-    if (!isUsageRoute()) return;
+    if (!isUsageRoute()) return false;
     var section = findModelPriceSection();
-    if (!section) return;
+    if (!section) return false;
 
     relaxChain(section, 10, 1200);
 
     var row = findModelNameRow(section);
-    if (!row) return;
+    if (!row) return false;
     relaxChain(row, 6, 1300);
 
     var trigger = row.querySelector("select,[role='combobox'],input[list],button[aria-haspopup='listbox'],button[aria-expanded='true']");
@@ -1053,42 +1053,75 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
       trigger.style.setProperty("position", "relative", "important");
       trigger.style.setProperty("z-index", "1400", "important");
     }
+    return true;
   }
 
+  var observer = null;
   var scheduled = false;
+  var patchApplied = false;
+  var lastScheduleAt = 0;
+  var scheduleGapMs = 180;
+
+  function stopObserver() {
+    if (!observer) return;
+    observer.disconnect();
+    observer = null;
+  }
+
   function schedulePatch() {
-    if (scheduled) return;
+    if (!isUsageRoute()) {
+      stopObserver();
+      return;
+    }
+    var now = Date.now();
+    if (scheduled || now - lastScheduleAt < scheduleGapMs) return;
     scheduled = true;
+    lastScheduleAt = now;
     setTimeout(function () {
       scheduled = false;
-      patchModelPriceDropdown();
+      patchApplied = patchModelPriceDropdown();
+      if (patchApplied) {
+        stopObserver();
+      }
     }, 30);
   }
 
   function setupObserver() {
-    if (!window.MutationObserver || !document.body) return;
-    var observer = new MutationObserver(function () {
+    if (!isUsageRoute()) {
+      stopObserver();
+      return;
+    }
+    if (!window.MutationObserver || !document.body || observer) return;
+    observer = new MutationObserver(function () {
+      if (patchApplied) {
+        stopObserver();
+        return;
+      }
       schedulePatch();
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  window.addEventListener("hashchange", schedulePatch, true);
-  window.addEventListener("popstate", schedulePatch, true);
-  window.addEventListener("resize", schedulePatch, true);
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () {
-      setupObserver();
-      schedulePatch();
-    }, { once: true });
-  } else {
+  function handleRouteChange() {
+    patchApplied = false;
     setupObserver();
     schedulePatch();
   }
 
-  setTimeout(schedulePatch, 300);
-  setTimeout(schedulePatch, 1200);
+  window.addEventListener("hashchange", handleRouteChange, true);
+  window.addEventListener("popstate", handleRouteChange, true);
+  window.addEventListener("resize", schedulePatch, true);
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () {
+      handleRouteChange();
+    }, { once: true });
+  } else {
+    handleRouteChange();
+  }
+
+  setTimeout(handleRouteChange, 300);
+  setTimeout(handleRouteChange, 1200);
 })();
 </script>`)
 

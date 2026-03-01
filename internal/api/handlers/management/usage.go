@@ -3,6 +3,8 @@ package management
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,13 +25,56 @@ type usageImportPayload struct {
 // GetUsageStatistics returns the in-memory request statistics snapshot.
 func (h *Handler) GetUsageStatistics(c *gin.Context) {
 	var snapshot usage.StatisticsSnapshot
+	detailLimit := parseUsageDetailLimit(c)
 	if h != nil && h.usageStats != nil {
-		snapshot = h.usageStats.Snapshot()
+		snapshot = h.usageStats.SnapshotWithDetailLimit(detailLimit)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"usage":           snapshot,
 		"failed_requests": snapshot.FailureCount,
+		"details_mode":    usageDetailsMode(detailLimit),
 	})
+}
+
+func parseUsageDetailLimit(c *gin.Context) int {
+	if c == nil {
+		return 0
+	}
+	if !isTruthy(c.Query("details")) {
+		return 0
+	}
+	rawLimit := strings.TrimSpace(c.Query("detail_limit"))
+	if rawLimit == "" {
+		return -1
+	}
+	limit, err := strconv.Atoi(rawLimit)
+	if err != nil {
+		return -1
+	}
+	if limit < 0 {
+		return -1
+	}
+	return limit
+}
+
+func isTruthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func usageDetailsMode(detailLimit int) string {
+	switch {
+	case detailLimit == 0:
+		return "none"
+	case detailLimit < 0:
+		return "all"
+	default:
+		return "limited"
+	}
 }
 
 // ExportUsageStatistics returns a complete usage snapshot for backup/migration.
@@ -69,7 +114,7 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 	}
 
 	result := h.usageStats.MergeSnapshot(payload.Usage)
-	snapshot := h.usageStats.Snapshot()
+	snapshot := h.usageStats.SnapshotWithDetailLimit(0)
 	c.JSON(http.StatusOK, gin.H{
 		"added":           result.Added,
 		"skipped":         result.Skipped,
