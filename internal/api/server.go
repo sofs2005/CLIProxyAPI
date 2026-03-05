@@ -626,6 +626,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
+		mgmt.POST("/auth-files/clean-codex-401", s.mgmt.CleanCodex401AuthFiles)
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
 		mgmt.PATCH("/auth-files/fields", s.mgmt.PatchAuthFileFields)
@@ -709,17 +710,56 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
   var STYLE_ID = "cpa-auth-warning-filter-style";
   var ROOT_ID = "cpa-auth-warning-filter-root";
   var SELECT_ID = "cpa-auth-warning-filter-select";
+  var BUTTON_ID = "cpa-auth-clean-401-button";
+  var STATUS_ID = "cpa-auth-clean-401-status";
   var STORAGE_KEY = "cpa_auth_warning_filter_mode";
+  var CLEAN_ENDPOINT = "/v0/management/auth-files/clean-codex-401";
   var isZh = (document.documentElement && (document.documentElement.lang || "").toLowerCase().indexOf("zh") === 0);
   var ZH_HEALTH = "\u5065\u5eb7\u72b6\u6001";
   var ZH_WARNING = "\u8b66\u544a";
+  var cachedAuthHeaderName = "";
+  var cachedAuthHeaderValue = "";
+  var cleanerBusy = false;
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
     var style = document.createElement("style");
     style.id = STYLE_ID;
-    style.textContent = "#"+ROOT_ID+"{position:fixed;right:16px;bottom:16px;z-index:2147483647;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;display:none;gap:8px;align-items:center}#"+ROOT_ID+" label{white-space:nowrap}#"+ROOT_ID+" select{background:#1f1f1f;color:#fff;border:1px solid #666;border-radius:6px;padding:2px 6px;min-width:112px}";
+    style.textContent = "#"+ROOT_ID+"{position:fixed;right:16px;bottom:16px;z-index:2147483647;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;display:none;gap:8px;align-items:center;flex-wrap:wrap;max-width:min(90vw,460px)}#"+ROOT_ID+" label{white-space:nowrap}#"+ROOT_ID+" select{background:#1f1f1f;color:#fff;border:1px solid #666;border-radius:6px;padding:2px 6px;min-width:112px}#"+ROOT_ID+" button{background:#8b1e1e;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:6px;padding:4px 10px;cursor:pointer}#"+ROOT_ID+" button[disabled]{opacity:.55;cursor:not-allowed}#"+STATUS_ID+"{max-width:230px;line-height:1.35;color:rgba(255,255,255,.88)}#"+STATUS_ID+".error{color:#ffb4b4}";
     document.head.appendChild(style);
+  }
+
+  function rememberManagementAuth(name, value) {
+    name = (name || "").toLowerCase();
+    value = (value || "") + "";
+    if (!value) return;
+    if (name === "authorization" || name === "x-management-key") {
+      cachedAuthHeaderName = name === "authorization" ? "Authorization" : "X-Management-Key";
+      cachedAuthHeaderValue = value;
+    }
+  }
+
+  function captureHeaders(headers) {
+    if (!headers) return;
+    try {
+      if (typeof Headers !== "undefined" && headers instanceof Headers) {
+        headers.forEach(function (value, key) { rememberManagementAuth(key, value); });
+        return;
+      }
+      if (Array.isArray(headers)) {
+        for (var i = 0; i < headers.length; i++) {
+          var pair = headers[i] || [];
+          rememberManagementAuth(pair[0], pair[1]);
+        }
+        return;
+      }
+      var keys = Object.keys(headers);
+      for (var j = 0; j < keys.length; j++) {
+        rememberManagementAuth(keys[j], headers[keys[j]]);
+      }
+    } catch (e) {
+      // ignore
+    }
   }
 
   function ensureControl() {
@@ -742,8 +782,19 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
       triggerRefresh();
     });
 
+    var button = document.createElement("button");
+    button.type = "button";
+    button.id = BUTTON_ID;
+    button.textContent = isZh ? "\u6e05\u7406401" : "Clean 401";
+    button.addEventListener("click", handleClean401);
+
+    var status = document.createElement("span");
+    status.id = STATUS_ID;
+
     root.appendChild(label);
     root.appendChild(select);
+    root.appendChild(button);
+    root.appendChild(status);
     document.body.appendChild(root);
     return root;
   }
@@ -805,6 +856,15 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     var originalFetch = window.fetch.bind(window);
     window.fetch = function (input, init) {
       try {
+        var requestURL = "";
+        if (typeof input === "string") {
+          requestURL = input;
+        } else if (input && input.url) {
+          requestURL = input.url;
+        }
+        if ((requestURL || "").indexOf("/v0/management/") !== -1) {
+          captureHeaders((init && init.headers) || (input && input.headers));
+        }
         if (typeof input === "string") {
           input = rewriteAuthFilesURL(input);
         } else if (input && input.url) {
@@ -824,8 +884,10 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     if (!window.XMLHttpRequest || !window.XMLHttpRequest.prototype) return;
     var proto = window.XMLHttpRequest.prototype;
     var originalOpen = proto.open;
+    var originalSetRequestHeader = proto.setRequestHeader;
     proto.open = function (method, url) {
       try {
+        this.__cpaRequestURL = typeof url === "string" ? url : "";
         if (typeof url === "string") {
           url = rewriteAuthFilesURL(url);
         }
@@ -834,6 +896,85 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
       }
       return originalOpen.apply(this, [method, url].concat([].slice.call(arguments, 2)));
     };
+    proto.setRequestHeader = function (name, value) {
+      try {
+        if (((this && this.__cpaRequestURL) || "").indexOf("/v0/management/") !== -1) {
+          rememberManagementAuth(name, value);
+        }
+      } catch (e) {
+        // ignore
+      }
+      return originalSetRequestHeader.apply(this, arguments);
+    };
+  }
+
+  function setCleanerState(busy, message, isError) {
+    cleanerBusy = !!busy;
+    var button = document.getElementById(BUTTON_ID);
+    var status = document.getElementById(STATUS_ID);
+    if (button) {
+      button.disabled = cleanerBusy;
+      button.textContent = cleanerBusy ? (isZh ? "\u6e05\u7406\u4e2d..." : "Cleaning...") : (isZh ? "\u6e05\u7406401" : "Clean 401");
+    }
+    if (status) {
+      status.textContent = message || "";
+      status.className = isError ? "error" : "";
+    }
+  }
+
+  function buildCleanerSummary(payload) {
+    if (!payload || typeof payload !== "object") {
+      return isZh ? "\u6e05\u7406\u5b8c\u6210" : "Cleanup finished";
+    }
+    var scanned = Number(payload.scanned || 0);
+    var matched = Number(payload.matched_401 || 0);
+    var deleted = Number(payload.deleted || 0);
+    var failed = Number(payload.failed || 0);
+    if (isZh) {
+      return "\u5df2\u626b\u63cf " + scanned + " \u4e2a，401 " + matched + " \u4e2a，\u5df2\u5220\u9664 " + deleted + " \u4e2a，\u5931\u8d25 " + failed + " \u4e2a";
+    }
+    return "Scanned " + scanned + ", matched " + matched + ", deleted " + deleted + ", failed " + failed;
+  }
+
+  function readResponseJSON(response) {
+    return response.text().then(function (text) {
+      if (!text) return {};
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        return { error: text };
+      }
+    });
+  }
+
+  function handleClean401() {
+    if (cleanerBusy || !isAuthFilesRoute()) return;
+    var confirmed = window.confirm(isZh ? "\u786e\u8ba4\u6e05\u7406\u6240\u6709\u547d\u4e2d 401 \u7684 Codex \u8ba4\u8bc1\u6587\u4ef6\uff1f" : "Delete all Codex auth files that return 401?");
+    if (!confirmed) return;
+    if (!cachedAuthHeaderName || !cachedAuthHeaderValue) {
+      setCleanerState(false, isZh ? "\u672a\u6355\u83b7\u5230\u7ba1\u7406\u7aef\u8ba4\u8bc1\u4fe1\u606f\uff0c\u8bf7\u5148\u5237\u65b0\u5217\u8868\u540e\u518d\u8bd5" : "Management auth header not captured yet. Refresh the list and retry.", true);
+      return;
+    }
+    setCleanerState(true, isZh ? "\u6b63\u5728\u68c0\u6d4b\u5e76\u5220\u9664 401 \u8d26\u53f7..." : "Checking and deleting 401 accounts...", false);
+    var headers = { "Content-Type": "application/json" };
+    headers[cachedAuthHeaderName] = cachedAuthHeaderValue;
+    window.fetch(CLEAN_ENDPOINT, { method: "POST", headers: headers, body: "{}" })
+      .then(function (response) {
+        return readResponseJSON(response).then(function (payload) {
+          if (!response.ok) {
+            var message = (payload && (payload.error || payload.message)) || (isZh ? "\u6e05\u7406\u5931\u8d25" : "Cleanup failed");
+            throw new Error(message);
+          }
+          return payload;
+        });
+      })
+      .then(function (payload) {
+        setCleanerState(false, buildCleanerSummary(payload), false);
+        setTimeout(triggerRefresh, 120);
+      })
+      .catch(function (error) {
+        setCleanerState(false, (error && error.message) || (isZh ? "\u6e05\u7406\u5931\u8d25" : "Cleanup failed"), true);
+      });
   }
 
   function showOrHideControl() {
@@ -845,6 +986,9 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
       if (select.value !== mode) {
         select.value = mode;
       }
+    }
+    if (!isAuthFilesRoute()) {
+      setCleanerState(false, "", false);
     }
   }
 

@@ -104,7 +104,10 @@ const (
 	codexCallbackPort     = 1455
 	geminiCLIEndpoint     = "https://cloudcode-pa.googleapis.com"
 	geminiCLIVersion      = "v1internal"
+	codex401ProbeUserAgent = "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal"
 )
+
+var codex401ProbeURL = "https://chatgpt.com/backend-api/wham/usage"
 
 type callbackForwarder struct {
 	provider string
@@ -707,24 +710,191 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 			targetPath = abs
 		}
 	}
-	if errRemove := os.Remove(targetPath); errRemove != nil {
-		if os.IsNotExist(errRemove) {
+	if errDelete := h.deleteAuthFileByResolvedTarget(ctx, targetPath, targetID); errDelete != nil {
+		if os.IsNotExist(errDelete) {
 			c.JSON(404, gin.H{"error": "file not found"})
 		} else {
-			c.JSON(500, gin.H{"error": fmt.Sprintf("failed to remove file: %v", errRemove)})
+			c.JSON(500, gin.H{"error": errDelete.Error()})
 		}
 		return
 	}
-	if errDeleteRecord := h.deleteTokenRecord(ctx, targetPath); errDeleteRecord != nil {
-		c.JSON(500, gin.H{"error": errDeleteRecord.Error()})
+	c.JSON(200, gin.H{"status": "ok"})
+}
+
+type codex401CleanItem struct {
+	Name       string `json:"name"`
+	AuthIndex  string `json:"auth_index,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	StatusCode int    `json:"status_code,omitempty"`
+	Result     string `json:"result"`
+	Error      string `json:"error,omitempty"`
+}
+
+type codex401CleanResponse struct {
+	Status     string              `json:"status"`
+	Scanned    int                 `json:"scanned"`
+	Matched401 int                 `json:"matched_401"`
+	Deleted    int                 `json:"deleted"`
+	Failed     int                 `json:"failed"`
+	Items      []codex401CleanItem `json:"items"`
+}
+
+func (h *Handler) CleanCodex401AuthFiles(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
 		return
+	}
+
+	ctx := c.Request.Context()
+	resp := codex401CleanResponse{Status: "ok", Items: make([]codex401CleanItem, 0)}
+	for _, auth := range h.authManager.List() {
+		if !isCodex401CleanerCandidate(auth) {
+			continue
+		}
+		auth.EnsureIndex()
+		resp.Scanned++
+
+		statusCode, errProbe := h.probeCodex401(ctx, auth)
+		if errProbe != nil {
+			resp.Failed++
+			resp.Items = append(resp.Items, codex401CleanItem{
+				Name:      strings.TrimSpace(auth.FileName),
+				AuthIndex: auth.Index,
+				Provider:  strings.TrimSpace(auth.Provider),
+				Result:    "probe_failed",
+				Error:     errProbe.Error(),
+			})
+			continue
+		}
+		if statusCode != http.StatusUnauthorized {
+			continue
+		}
+
+		resp.Matched401++
+		item := codex401CleanItem{
+			Name:       strings.TrimSpace(auth.FileName),
+			AuthIndex:  auth.Index,
+			Provider:   strings.TrimSpace(auth.Provider),
+			StatusCode: statusCode,
+			Result:     "deleted",
+		}
+		if errDelete := h.deleteAuthFileByName(ctx, auth.FileName); errDelete != nil {
+			resp.Failed++
+			item.Result = "delete_failed"
+			item.Error = errDelete.Error()
+		} else {
+			resp.Deleted++
+		}
+		resp.Items = append(resp.Items, item)
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func isCodex401CleanerCandidate(auth *coreauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return false
+	}
+	return strings.TrimSpace(auth.FileName) != ""
+}
+
+func (h *Handler) probeCodex401(ctx context.Context, auth *coreauth.Auth) (int, error) {
+	if auth == nil {
+		return 0, fmt.Errorf("auth is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	token, errToken := h.resolveTokenForAuth(ctx, auth)
+	if errToken != nil {
+		return 0, fmt.Errorf("resolve auth token failed: %w", errToken)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return 0, fmt.Errorf("auth token not found")
+	}
+
+	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, codex401ProbeURL, nil)
+	if errReq != nil {
+		return 0, fmt.Errorf("build probe request failed: %w", errReq)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", codex401ProbeUserAgent)
+	if accountID := codexAccountIDForAuth(auth); accountID != "" {
+		req.Header.Set("Chatgpt-Account-Id", accountID)
+	}
+
+	client := &http.Client{Timeout: defaultAPICallTimeout, Transport: h.apiCallTransport(auth)}
+	resp, errDo := client.Do(req)
+	if errDo != nil {
+		return 0, fmt.Errorf("probe request failed: %w", errDo)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
+}
+
+func codexAccountIDForAuth(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if auth.Metadata != nil {
+		if accountID, ok := auth.Metadata["account_id"].(string); ok {
+			if trimmed := strings.TrimSpace(accountID); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	if claims := extractCodexIDTokenClaims(auth); claims != nil {
+		if accountID, ok := claims["chatgpt_account_id"].(string); ok {
+			return strings.TrimSpace(accountID)
+		}
+	}
+	return ""
+}
+
+func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("invalid name")
+	}
+	targetPath := filepath.Join(h.cfg.AuthDir, filepath.Base(name))
+	targetID := ""
+	if targetAuth := h.findAuthForDelete(name); targetAuth != nil {
+		targetID = strings.TrimSpace(targetAuth.ID)
+		if path := strings.TrimSpace(authAttribute(targetAuth, "path")); path != "" {
+			targetPath = path
+		}
+	}
+	if !filepath.IsAbs(targetPath) {
+		if abs, errAbs := filepath.Abs(targetPath); errAbs == nil {
+			targetPath = abs
+		}
+	}
+	return h.deleteAuthFileByResolvedTarget(ctx, targetPath, targetID)
+}
+
+func (h *Handler) deleteAuthFileByResolvedTarget(ctx context.Context, targetPath string, targetID string) error {
+	if errRemove := os.Remove(targetPath); errRemove != nil {
+		if os.IsNotExist(errRemove) {
+			return errRemove
+		}
+		return fmt.Errorf("failed to remove file: %w", errRemove)
+	}
+	if errDeleteRecord := h.deleteTokenRecord(ctx, targetPath); errDeleteRecord != nil {
+		return errDeleteRecord
 	}
 	if targetID != "" {
 		h.disableAuth(ctx, targetID)
 	} else {
 		h.disableAuth(ctx, targetPath)
 	}
-	c.JSON(200, gin.H{"status": "ok"})
+	return nil
 }
 
 func (h *Handler) findAuthForDelete(name string) *coreauth.Auth {
