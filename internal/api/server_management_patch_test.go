@@ -85,6 +85,21 @@ func TestInjectModelPriceDropdownClipPatch_AppendsWhenBodyMissing(t *testing.T) 
 	}
 }
 
+func TestInjectModelPriceDropdownClipPatch_IncludesSelectModelFallbackLabels(t *testing.T) {
+	input := []byte("<html><body><div>content</div></body></html>")
+	out := injectModelPriceDropdownClipPatch(input)
+	result := string(out)
+
+	for _, needle := range []string{
+		"\\u9009\\u62e9\\u6a21\\u578b",
+		"select model",
+	} {
+		if !strings.Contains(result, needle) {
+			t.Fatalf("expected model price dropdown clip patch to include fallback label %q", needle)
+		}
+	}
+}
+
 func TestInjectUsageWarmupPatch_InsertsBeforeBodyClose(t *testing.T) {
 	input := []byte("<html><body><div>content</div></body></html>")
 	out := injectUsageWarmupPatch(input)

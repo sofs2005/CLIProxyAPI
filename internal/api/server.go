@@ -1056,6 +1056,9 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
   var SECTION_EN = "model price settings";
   var LABEL_ZH = "\u6a21\u578b\u540d\u79f0";
   var LABEL_EN = "model name";
+  var SELECT_LABEL_ZH = "\u9009\u62e9\u6a21\u578b";
+  var SELECT_LABEL_EN = "select model";
+  var COMBO_SELECTOR = "select,[role='combobox'],input[list],button[aria-haspopup='listbox'],button[aria-expanded]";
 
   function normalizeText(text) {
     return (text || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -1083,7 +1086,12 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
 
   function hasComboLike(el) {
     if (!el || !el.querySelector) return false;
-    return !!el.querySelector("select,[role='combobox'],input[list],button[aria-haspopup='listbox'],button[aria-expanded]");
+    return !!el.querySelector(COMBO_SELECTOR);
+  }
+
+  function countCombos(el) {
+    if (!el || !el.querySelectorAll) return 0;
+    return el.querySelectorAll(COMBO_SELECTOR).length;
   }
 
   function findTextElement(needles, root) {
@@ -1113,7 +1121,7 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
 
   function findModelPriceSection() {
     var sectionNeedles = [SECTION_ZH, SECTION_EN];
-    var labelNeedles = [LABEL_ZH, LABEL_EN];
+    var labelNeedles = [LABEL_ZH, LABEL_EN, SELECT_LABEL_ZH, SELECT_LABEL_EN];
 
     var heading = findTextElement(sectionNeedles, document);
     if (heading) {
@@ -1135,18 +1143,37 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
     return closestContainer(label);
   }
 
-  function findModelNameRow(section) {
-    if (!section) return null;
-    var label = findTextElement([LABEL_ZH, LABEL_EN], section);
-    if (!label) return null;
-    var current = label;
-    for (var i = 0; i < 6 && current; i++) {
-      if (hasComboLike(current)) {
-        return current;
-      }
+  function findFirstComboRow(section) {
+    if (!section || !section.querySelector) return null;
+    var trigger = section.querySelector(COMBO_SELECTOR);
+    if (!trigger) return null;
+    var candidate = trigger;
+    var current = trigger.parentElement;
+    for (var i = 0; i < 6 && current && current !== section; i++) {
+      if (countCombos(current) !== 1) break;
+      candidate = current;
       current = current.parentElement;
     }
-    return label.parentElement;
+    return candidate;
+  }
+
+  function findModelNameRow(section) {
+    if (!section) return null;
+    var labelNeedles = [LABEL_ZH, LABEL_EN, SELECT_LABEL_ZH, SELECT_LABEL_EN];
+    var label = findTextElement(labelNeedles, section);
+    if (label) {
+      var current = label;
+      for (var i = 0; i < 6 && current; i++) {
+        if (hasComboLike(current)) {
+          return current;
+        }
+        current = current.parentElement;
+      }
+      if (label.parentElement) {
+        return label.parentElement;
+      }
+    }
+    return findFirstComboRow(section);
   }
 
   function relaxNode(node, minZIndex) {
@@ -1193,7 +1220,7 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
     if (!row) return false;
     relaxChain(row, 6, 1300);
 
-    var trigger = row.querySelector("select,[role='combobox'],input[list],button[aria-haspopup='listbox'],button[aria-expanded='true']");
+    var trigger = row.querySelector(COMBO_SELECTOR);
     if (trigger && trigger.style) {
       trigger.style.setProperty("position", "relative", "important");
       trigger.style.setProperty("z-index", "1400", "important");
