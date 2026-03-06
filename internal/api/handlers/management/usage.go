@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,30 +29,214 @@ type usageSnapshotCacheEntry struct {
 	expires  time.Time
 }
 
+type usagePagination struct {
+	Page       int `json:"page"`
+	PageSize   int `json:"page_size"`
+	TotalItems int `json:"total_items"`
+	TotalPages int `json:"total_pages"`
+}
+
+type usageRequestDetailItem struct {
+	APIKey    string           `json:"api_key"`
+	Model     string           `json:"model"`
+	Timestamp time.Time        `json:"timestamp"`
+	Source    string           `json:"source"`
+	AuthIndex string           `json:"auth_index"`
+	Failed    bool             `json:"failed"`
+	Tokens    usage.TokenStats `json:"tokens"`
+}
+
+type usageRequestDetailsPage struct {
+	Items      []usageRequestDetailItem `json:"items"`
+	Pagination usagePagination          `json:"pagination"`
+}
+
 const usageSnapshotCacheTTL = 20 * time.Second
 
 // GetUsageStatistics returns the in-memory request statistics snapshot.
 func (h *Handler) GetUsageStatistics(c *gin.Context) {
-	var snapshot usage.StatisticsSnapshot
 	detailLimit := parseUsageDetailLimit(c)
 	windowHours := parseUsageWindowHours(c)
+	apiPage, apiPageSize := parseUsagePaginationParams(c, "api_page", "api_page_size")
+	detailPage, detailPageSize := parseUsagePaginationParams(c, "detail_page", "detail_page_size")
+
+	snapshot := h.resolveUsageSnapshot(windowHours, detailLimit)
+	apiPagination := usagePagination{}
+	if apiPageSize > 0 {
+		snapshot, apiPagination = paginateUsageAPIs(snapshot, apiPage, apiPageSize)
+	}
+
+	requestDetailsPage := usageRequestDetailsPage{}
+	if detailPageSize > 0 {
+		fullDetailsSnapshot := h.resolveUsageSnapshot(windowHours, -1)
+		requestDetailsPage = buildUsageRequestDetailsPage(fullDetailsSnapshot, detailPage, detailPageSize)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"usage":                 snapshot,
+		"failed_requests":       snapshot.FailureCount,
+		"details_mode":          usageDetailsMode(detailLimit),
+		"window_hours":          windowHours,
+		"api_pagination":        apiPagination,
+		"request_details_page":  requestDetailsPage,
+	})
+}
+
+func (h *Handler) resolveUsageSnapshot(windowHours, detailLimit int) usage.StatisticsSnapshot {
+	var snapshot usage.StatisticsSnapshot
 	cacheKey := usageSnapshotCacheKey(windowHours, detailLimit)
 	if cached, ok := h.getUsageSnapshotFromCache(cacheKey); ok {
-		snapshot = cached
-	} else if h != nil && h.usageStats != nil {
+		return cached
+	}
+	if h != nil && h.usageStats != nil {
 		snapshot = h.usageStats.SnapshotRecentWithDetailLimit(windowHours, detailLimit)
 		h.storeUsageSnapshotCache(cacheKey, snapshot)
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"usage":           snapshot,
-		"failed_requests": snapshot.FailureCount,
-		"details_mode":    usageDetailsMode(detailLimit),
-		"window_hours":    windowHours,
-	})
+	return snapshot
 }
 
 func usageSnapshotCacheKey(windowHours, detailLimit int) string {
 	return fmt.Sprintf("w:%d|d:%d", windowHours, detailLimit)
+}
+
+func parseUsagePaginationParams(c *gin.Context, pageKey, sizeKey string) (int, int) {
+	if c == nil {
+		return 1, 0
+	}
+	rawPage := strings.TrimSpace(c.Query(pageKey))
+	rawSize := strings.TrimSpace(c.Query(sizeKey))
+	if rawPage == "" && rawSize == "" {
+		return 1, 0
+	}
+
+	page := 1
+	if rawPage != "" {
+		if parsed, err := strconv.Atoi(rawPage); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+
+	pageSize := 50
+	if rawSize != "" {
+		if parsed, err := strconv.Atoi(rawSize); err == nil && parsed > 0 {
+			pageSize = parsed
+		}
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	return page, pageSize
+}
+
+func buildUsagePagination(totalItems, page, pageSize int) usagePagination {
+	if pageSize <= 0 {
+		return usagePagination{}
+	}
+	if page < 1 {
+		page = 1
+	}
+	totalPages := 0
+	if totalItems > 0 {
+		totalPages = (totalItems + pageSize - 1) / pageSize
+		if page > totalPages {
+			page = totalPages
+		}
+	} else {
+		page = 1
+	}
+	return usagePagination{
+		Page:       page,
+		PageSize:   pageSize,
+		TotalItems: totalItems,
+		TotalPages: totalPages,
+	}
+}
+
+func paginateUsageAPIs(snapshot usage.StatisticsSnapshot, page, pageSize int) (usage.StatisticsSnapshot, usagePagination) {
+	if pageSize <= 0 {
+		return snapshot, usagePagination{}
+	}
+	apiKeys := make([]string, 0, len(snapshot.APIs))
+	for apiKey := range snapshot.APIs {
+		apiKeys = append(apiKeys, apiKey)
+	}
+	sort.Slice(apiKeys, func(i, j int) bool {
+		left := snapshot.APIs[apiKeys[i]]
+		right := snapshot.APIs[apiKeys[j]]
+		if left.TotalRequests != right.TotalRequests {
+			return left.TotalRequests > right.TotalRequests
+		}
+		if left.TotalTokens != right.TotalTokens {
+			return left.TotalTokens > right.TotalTokens
+		}
+		return apiKeys[i] < apiKeys[j]
+	})
+
+	pagination := buildUsagePagination(len(apiKeys), page, pageSize)
+	if len(apiKeys) == 0 || pagination.TotalPages == 0 {
+		snapshot.APIs = map[string]usage.APISnapshot{}
+		return snapshot, pagination
+	}
+	start := (pagination.Page - 1) * pagination.PageSize
+	end := start + pagination.PageSize
+	if end > len(apiKeys) {
+		end = len(apiKeys)
+	}
+	trimmed := make(map[string]usage.APISnapshot, end-start)
+	for _, apiKey := range apiKeys[start:end] {
+		trimmed[apiKey] = snapshot.APIs[apiKey]
+	}
+	snapshot.APIs = trimmed
+	return snapshot, pagination
+}
+
+func buildUsageRequestDetailsPage(snapshot usage.StatisticsSnapshot, page, pageSize int) usageRequestDetailsPage {
+	rows := make([]usageRequestDetailItem, 0)
+	for apiKey, apiSnapshot := range snapshot.APIs {
+		for modelName, modelSnapshot := range apiSnapshot.Models {
+			for _, detail := range modelSnapshot.Details {
+				rows = append(rows, usageRequestDetailItem{
+					APIKey:    apiKey,
+					Model:     modelName,
+					Timestamp: detail.Timestamp,
+					Source:    detail.Source,
+					AuthIndex: detail.AuthIndex,
+					Failed:    detail.Failed,
+					Tokens:    detail.Tokens,
+				})
+			}
+		}
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		if !rows[i].Timestamp.Equal(rows[j].Timestamp) {
+			return rows[i].Timestamp.After(rows[j].Timestamp)
+		}
+		if rows[i].APIKey != rows[j].APIKey {
+			return rows[i].APIKey < rows[j].APIKey
+		}
+		if rows[i].Model != rows[j].Model {
+			return rows[i].Model < rows[j].Model
+		}
+		if rows[i].Source != rows[j].Source {
+			return rows[i].Source < rows[j].Source
+		}
+		return rows[i].AuthIndex < rows[j].AuthIndex
+	})
+
+	pagination := buildUsagePagination(len(rows), page, pageSize)
+	if len(rows) == 0 || pagination.TotalPages == 0 {
+		return usageRequestDetailsPage{Items: []usageRequestDetailItem{}, Pagination: pagination}
+	}
+	start := (pagination.Page - 1) * pagination.PageSize
+	end := start + pagination.PageSize
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return usageRequestDetailsPage{
+		Items:      rows[start:end],
+		Pagination: pagination,
+	}
 }
 
 func (h *Handler) getUsageSnapshotFromCache(key string) (usage.StatisticsSnapshot, bool) {

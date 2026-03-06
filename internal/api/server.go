@@ -692,6 +692,7 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	patched := injectAuthFilesWarningFilterPatch(data)
 	patched = injectModelPriceDropdownClipPatch(patched)
 	patched = injectUsageWarmupPatch(patched)
+	patched = injectUsagePaginationPatch(patched)
 	c.Data(http.StatusOK, "text/html; charset=utf-8", patched)
 }
 
@@ -1248,15 +1249,12 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
     var now = Date.now();
     if (scheduled || now - lastScheduleAt < scheduleGapMs) return;
     scheduled = true;
-    lastScheduleAt = now;
-    setTimeout(function () {
-      scheduled = false;
-      patchApplied = patchModelPriceDropdown();
-      if (patchApplied) {
-        stopObserver();
-      }
-    }, 30);
-  }
+		lastScheduleAt = now;
+		setTimeout(function () {
+			scheduled = false;
+			patchApplied = patchModelPriceDropdown() || patchApplied;
+		}, 30);
+	}
 
   function setupObserver() {
     if (!isUsageRoute()) {
@@ -1288,8 +1286,9 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
     handleRouteChange();
   }
 
-  setTimeout(handleRouteChange, 300);
-  setTimeout(handleRouteChange, 1200);
+	setTimeout(handleRouteChange, 300);
+	setTimeout(handleRouteChange, 1200);
+	setTimeout(handleRouteChange, 2500);
 })();
 </script>`)
 
@@ -1478,6 +1477,305 @@ func injectUsageWarmupPatch(html []byte) []byte {
       firstUsageRequestDone = false;
     }
   }, true);
+})();
+</script>`)
+
+	lower := bytes.ToLower(html)
+	bodyClose := []byte("</body>")
+	if idx := bytes.LastIndex(lower, bodyClose); idx >= 0 {
+		out := make([]byte, 0, len(html)+len(patch))
+		out = append(out, html[:idx]...)
+		out = append(out, patch...)
+		out = append(out, html[idx:]...)
+		return out
+	}
+	return append(html, patch...)
+}
+
+func injectUsagePaginationPatch(html []byte) []byte {
+	const marker = "__cpa_usage_pagination_patch__"
+	if len(html) == 0 || bytes.Contains(html, []byte(marker)) {
+		return html
+	}
+
+	patch := []byte(`<script>
+(function () {
+  var MARKER = "__cpa_usage_pagination_patch__";
+  if (window[MARKER]) return;
+  window[MARKER] = true;
+
+  var API_PAGE_KEY = "cpa_usage_api_page";
+  var DETAIL_PAGE_KEY = "cpa_usage_detail_page";
+  var PAGE_SIZE = 50;
+  var DETAILS_SECTION_ZH = "\u8bf7\u6c42\u4e8b\u4ef6\u660e\u7ec6";
+  var DETAILS_SECTION_EN = "request event details";
+  var CREDS_SECTION_ZH = "\u51ed\u8bc1\u7edf\u8ba1";
+  var CREDS_SECTION_EN = "credential statistics";
+  var DETAILS_ROOT_ID = "cpa-usage-request-details-pagination";
+  var CREDS_ROOT_ID = "cpa-usage-credential-pagination";
+  var latestUsagePayload = null;
+  var renderScheduled = false;
+
+  function normalizeText(text) {
+    return (text || "").toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  function isUsageRoute() {
+    var hash = normalizeText(window.location.hash || "");
+    return hash.indexOf("/usage") !== -1 || hash.indexOf("usage") !== -1 || hash.indexOf("\u7edf\u8ba1") !== -1;
+  }
+
+  function toURL(raw) {
+    try {
+      return new URL(raw, window.location.origin);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function isUsageAPI(urlObj) {
+    return !!urlObj && /\/v0\/management\/usage$/i.test(urlObj.pathname || "");
+  }
+
+  function readStoredPage(key) {
+    try {
+      var raw = window.sessionStorage ? window.sessionStorage.getItem(key) : "";
+      var parsed = parseInt(raw || "", 10);
+      return parsed > 0 ? parsed : 1;
+    } catch (e) {
+      return 1;
+    }
+  }
+
+  function writeStoredPage(key, value) {
+    var next = value > 0 ? value : 1;
+    try {
+      if (window.sessionStorage) {
+        window.sessionStorage.setItem(key, String(next));
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function applyUsagePagination(urlObj) {
+    var next = new URL(urlObj.toString());
+    next.searchParams.set("compact", "1");
+    next.searchParams.set("details", "0");
+    next.searchParams.set("api_page", String(readStoredPage(API_PAGE_KEY)));
+    next.searchParams.set("api_page_size", String(PAGE_SIZE));
+    next.searchParams.set("detail_page", String(readStoredPage(DETAIL_PAGE_KEY)));
+    next.searchParams.set("detail_page_size", String(PAGE_SIZE));
+    return next;
+  }
+
+  function findSection(needles) {
+    var nodes = document.querySelectorAll("h1,h2,h3,h4,h5,h6,legend,label,strong,span,div,p");
+    for (var i = 0; i < nodes.length; i++) {
+      var value = normalizeText(nodes[i].innerText || nodes[i].textContent || "");
+      if (!value || value.length > 120) continue;
+      for (var j = 0; j < needles.length; j++) {
+        if (value.indexOf(normalizeText(needles[j])) !== -1) {
+          return nodes[i];
+        }
+      }
+    }
+    return null;
+  }
+
+  function findSectionContainer(heading) {
+    var current = heading;
+    for (var i = 0; i < 8 && current; i++) {
+      if (current.matches && current.matches("section,article,.card,.panel,[class*='card'],[class*='panel']")) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return heading ? heading.parentElement : null;
+  }
+
+  function ensureHost(id, section) {
+    if (!section) return null;
+    var host = document.getElementById(id);
+    if (host) return host;
+    host = document.createElement("div");
+    host.id = id;
+    host.style.marginTop = "12px";
+    section.appendChild(host);
+    return host;
+  }
+
+  function createButton(label, disabled, onClick) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.disabled = !!disabled;
+    button.style.marginRight = "8px";
+    button.style.padding = "4px 10px";
+    button.style.borderRadius = "6px";
+    button.style.border = "1px solid rgba(148, 163, 184, 0.45)";
+    button.style.background = disabled ? "rgba(148, 163, 184, 0.12)" : "rgba(59, 130, 246, 0.14)";
+    button.style.cursor = disabled ? "not-allowed" : "pointer";
+    if (!disabled) button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function renderPager(host, title, pagination, storageKey) {
+    if (!host || !pagination || !pagination.page_size) return;
+    host.innerHTML = "";
+    var wrap = document.createElement("div");
+    wrap.style.display = "flex";
+    wrap.style.alignItems = "center";
+    wrap.style.flexWrap = "wrap";
+    wrap.style.gap = "8px";
+
+    var label = document.createElement("strong");
+    label.textContent = title;
+    wrap.appendChild(label);
+
+    wrap.appendChild(createButton("上一页", pagination.page <= 1, function () {
+      writeStoredPage(storageKey, pagination.page - 1);
+      window.location.reload();
+    }));
+
+    wrap.appendChild(createButton("下一页", pagination.total_pages <= 0 || pagination.page >= pagination.total_pages, function () {
+      writeStoredPage(storageKey, pagination.page + 1);
+      window.location.reload();
+    }));
+
+    var info = document.createElement("span");
+    info.textContent = "第 " + (pagination.total_pages > 0 ? pagination.page : 1) + " / " + (pagination.total_pages > 0 ? pagination.total_pages : 1) + " 页，合计 " + (pagination.total_items || 0) + " 条";
+    wrap.appendChild(info);
+    host.appendChild(wrap);
+  }
+
+  function renderRequestDetails(host, pageData) {
+    if (!host || !pageData) return;
+    var items = Array.isArray(pageData.items) ? pageData.items : [];
+    var table = document.createElement("table");
+    table.style.width = "100%";
+    table.style.borderCollapse = "collapse";
+    table.style.marginTop = "10px";
+
+    var headers = ["时间", "凭证", "模型", "来源", "索引", "Token", "状态"];
+    var thead = document.createElement("thead");
+    var headRow = document.createElement("tr");
+    for (var i = 0; i < headers.length; i++) {
+      var th = document.createElement("th");
+      th.textContent = headers[i];
+      th.style.textAlign = "left";
+      th.style.padding = "6px 8px";
+      th.style.borderBottom = "1px solid rgba(148, 163, 184, 0.25)";
+      headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    var tbody = document.createElement("tbody");
+    if (!items.length) {
+      var emptyRow = document.createElement("tr");
+      var emptyCell = document.createElement("td");
+      emptyCell.colSpan = headers.length;
+      emptyCell.textContent = "暂无明细";
+      emptyCell.style.padding = "10px 8px";
+      emptyRow.appendChild(emptyCell);
+      tbody.appendChild(emptyRow);
+    } else {
+      for (var j = 0; j < items.length; j++) {
+        var item = items[j] || {};
+        var row = document.createElement("tr");
+        var values = [
+          item.timestamp ? new Date(item.timestamp).toLocaleString() : "-",
+          item.api_key || "-",
+          item.model || "-",
+          item.source || "-",
+          item.auth_index || "-",
+          item.tokens && typeof item.tokens.total_tokens === "number" ? String(item.tokens.total_tokens) : "0",
+          item.failed ? "失败" : "成功"
+        ];
+        for (var k = 0; k < values.length; k++) {
+          var td = document.createElement("td");
+          td.textContent = values[k];
+          td.style.padding = "6px 8px";
+          td.style.borderBottom = "1px solid rgba(148, 163, 184, 0.12)";
+          row.appendChild(td);
+        }
+        tbody.appendChild(row);
+      }
+    }
+    table.appendChild(tbody);
+    host.appendChild(table);
+  }
+
+  function renderUsagePaginationUI() {
+    if (!isUsageRoute() || !latestUsagePayload) return;
+
+    var credsHeading = findSection([CREDS_SECTION_ZH, CREDS_SECTION_EN]);
+    var credsSection = findSectionContainer(credsHeading);
+    var credsHost = ensureHost(CREDS_ROOT_ID, credsSection);
+    if (credsHost && latestUsagePayload.api_pagination) {
+      writeStoredPage(API_PAGE_KEY, latestUsagePayload.api_pagination.page || 1);
+      renderPager(credsHost, "凭证统计分页", latestUsagePayload.api_pagination, API_PAGE_KEY);
+    }
+
+    var detailsHeading = findSection([DETAILS_SECTION_ZH, DETAILS_SECTION_EN]);
+    var detailsSection = findSectionContainer(detailsHeading);
+    var detailsHost = ensureHost(DETAILS_ROOT_ID, detailsSection);
+    if (detailsHost && latestUsagePayload.request_details_page) {
+      writeStoredPage(DETAIL_PAGE_KEY, latestUsagePayload.request_details_page.pagination && latestUsagePayload.request_details_page.pagination.page || 1);
+      detailsHost.innerHTML = "";
+      renderPager(detailsHost, "请求事件明细分页", latestUsagePayload.request_details_page.pagination, DETAIL_PAGE_KEY);
+      renderRequestDetails(detailsHost, latestUsagePayload.request_details_page);
+    }
+  }
+
+  function scheduleRender() {
+    if (renderScheduled) return;
+    renderScheduled = true;
+    setTimeout(function () {
+      renderScheduled = false;
+      renderUsagePaginationUI();
+    }, 40);
+  }
+
+  var originalFetch = window.fetch;
+  if (typeof originalFetch === "function") {
+    window.fetch = function (input, init) {
+      var rawURL = typeof input === "string" ? input : (input && input.url);
+      var urlObj = toURL(rawURL);
+      if (!isUsageRoute() || !isUsageAPI(urlObj)) {
+        return originalFetch.apply(this, arguments);
+      }
+
+      var nextURL = applyUsagePagination(urlObj);
+      var call;
+      if (typeof Request !== "undefined" && input instanceof Request) {
+        call = originalFetch.call(this, new Request(nextURL.toString(), input), init);
+      } else {
+        call = originalFetch.call(this, nextURL.toString(), init);
+      }
+      return call.then(function (resp) {
+        if (!resp || !resp.ok) return resp;
+        return resp.clone().json().then(function (payload) {
+          latestUsagePayload = payload || null;
+          scheduleRender();
+          return resp;
+        }).catch(function () {
+          return resp;
+        });
+      });
+    };
+  }
+
+  window.addEventListener("hashchange", scheduleRender, true);
+  window.addEventListener("resize", scheduleRender, true);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () {
+      scheduleRender();
+    }, { once: true });
+  } else {
+    scheduleRender();
+  }
 })();
 </script>`)
 
