@@ -693,6 +693,9 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	patched = injectModelPriceDropdownClipPatch(patched)
 	patched = injectUsageWarmupPatch(patched)
 	patched = injectUsagePaginationPatch(patched)
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
 	c.Data(http.StatusOK, "text/html; charset=utf-8", patched)
 }
 
@@ -1177,6 +1180,31 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
     return findFirstComboRow(section);
   }
 
+  function isVisibleCombo(node) {
+    if (!node || !node.getBoundingClientRect) return false;
+    var rect = node.getBoundingClientRect();
+    if (!rect || rect.width === 0 || rect.height === 0) return false;
+    var style = window.getComputedStyle ? window.getComputedStyle(node) : null;
+    if (style && (style.display === "none" || style.visibility === "hidden")) return false;
+    return true;
+  }
+
+  function findLowestVisibleCombo() {
+    var combos = document.querySelectorAll(COMBO_SELECTOR);
+    var best = null;
+    var bestTop = -Infinity;
+    for (var i = 0; i < combos.length; i++) {
+      var combo = combos[i];
+      if (!isVisibleCombo(combo)) continue;
+      var rect = combo.getBoundingClientRect();
+      if (rect.top >= bestTop) {
+        bestTop = rect.top;
+        best = combo;
+      }
+    }
+    return best;
+  }
+
   function relaxNode(node, minZIndex) {
     if (!node || !node.style || !window.getComputedStyle) return;
     var style = window.getComputedStyle(node);
@@ -1213,12 +1241,18 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
   function patchModelPriceDropdown() {
     if (!isUsageRoute()) return false;
     var section = findModelPriceSection();
-    if (!section) return false;
-
-    relaxChain(section, 10, 1200);
-
-    var row = findModelNameRow(section);
-    if (!row) return false;
+    var row = null;
+    if (section) {
+      relaxChain(section, 10, 1200);
+      row = findModelNameRow(section);
+    }
+    if (!row) {
+      var combo = findLowestVisibleCombo();
+      if (!combo) return false;
+      row = combo.parentElement || combo;
+      relaxChain(combo, 8, 1300);
+      relaxChain(row, 6, 1310);
+    }
     relaxChain(row, 6, 1300);
 
     var trigger = row.querySelector(COMBO_SELECTOR);
@@ -1624,8 +1658,9 @@ func injectUsagePaginationPatch(html []byte) []byte {
   }
 
   function loadUsagePage() {
-    if (!isUsageRoute() || !latestUsageRequestURL || typeof window.fetch !== "function") return;
-    var urlObj = toURL(latestUsageRequestURL);
+    if (!isUsageRoute() || typeof window.fetch !== "function") return;
+    var baseURL = latestUsageRequestURL || "/v0/management/usage";
+    var urlObj = toURL(baseURL);
     if (!isUsageAPI(urlObj)) return;
     var nextURL = applyUsagePagination(urlObj);
     if (!nextURL) return;
@@ -1990,9 +2025,8 @@ func injectUsagePaginationPatch(html []byte) []byte {
     if (isUsageRoute()) {
       setupObserver();
       scheduleRender();
-      if (latestUsageRequestURL) {
-        loadUsagePage();
-      }
+      if (!latestUsageRequestURL) latestUsageRequestURL = "/v0/management/usage";
+      loadUsagePage();
       setTimeout(scheduleRender, 300);
       return;
     }

@@ -93,6 +93,7 @@ func TestInjectModelPriceDropdownClipPatch_IncludesSelectModelFallbackLabels(t *
 	for _, needle := range []string{
 		"\\u9009\\u62e9\\u6a21\\u578b",
 		"select model",
+		"getBoundingClientRect",
 	} {
 		if !strings.Contains(result, needle) {
 			t.Fatalf("expected model price dropdown clip patch to include fallback label %q", needle)
@@ -174,6 +175,7 @@ func TestInjectUsagePaginationPatch_InsertsExpectedHooks(t *testing.T) {
 		"cpa-usage-pagination-fallback-root",
 		"cpa_pagination",
 		"loadUsagePage",
+		"/v0/management/usage",
 		"responseType",
 		"getBoundingClientRect",
 	} {

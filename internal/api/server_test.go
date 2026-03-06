@@ -208,3 +208,36 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestServeManagementControlPanel_DisablesCaching(t *testing.T) {
+	server := newTestServer(t)
+	server.cfg.RemoteManagement.SecretKey = "test"
+
+	staticDir := filepath.Join(filepath.Dir(server.configFilePath), "static")
+	if err := os.MkdirAll(staticDir, 0o755); err != nil {
+		t.Fatalf("failed to create static dir: %v", err)
+	}
+	filePath := filepath.Join(staticDir, "management.html")
+	if err := os.WriteFile(filePath, []byte("<html><body><div>ok</div></body></html>"), 0o644); err != nil {
+		t.Fatalf("failed to write management asset: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d; body=%s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	cacheControl := strings.ToLower(rr.Header().Get("Cache-Control"))
+	if !strings.Contains(cacheControl, "no-store") {
+		t.Fatalf("expected Cache-Control to contain no-store, got %q", rr.Header().Get("Cache-Control"))
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "__cpa_model_price_dropdown_clip_patch__") {
+		t.Fatalf("expected dropdown patch marker in management response, got %s", body)
+	}
+	if !strings.Contains(body, "__cpa_usage_pagination_patch__") {
+		t.Fatalf("expected usage pagination patch marker in management response, got %s", body)
+	}
+}
