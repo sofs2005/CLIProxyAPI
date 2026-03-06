@@ -100,6 +100,24 @@ func TestInjectModelPriceDropdownClipPatch_IncludesSelectModelFallbackLabels(t *
 	}
 }
 
+func TestInjectModelPriceDropdownClipPatch_ContainsGenericOverlayRepairHooks(t *testing.T) {
+	input := []byte("<html><body><div>content</div></body></html>")
+	out := injectModelPriceDropdownClipPatch(input)
+	result := string(out)
+
+	for _, needle := range []string{
+		"pointerdown",
+		"focusin",
+		"data-radix-popper-content-wrapper",
+		"role='listbox'",
+		"activeTrigger",
+	} {
+		if !strings.Contains(result, needle) {
+			t.Fatalf("expected model price dropdown clip patch to include generic overlay repair hook %q", needle)
+		}
+	}
+}
+
 func TestInjectUsageWarmupPatch_InsertsBeforeBodyClose(t *testing.T) {
 	input := []byte("<html><body><div>content</div></body></html>")
 	out := injectUsageWarmupPatch(input)

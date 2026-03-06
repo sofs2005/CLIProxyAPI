@@ -1059,6 +1059,7 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
   var SELECT_LABEL_ZH = "\u9009\u62e9\u6a21\u578b";
   var SELECT_LABEL_EN = "select model";
   var COMBO_SELECTOR = "select,[role='combobox'],input[list],button[aria-haspopup='listbox'],button[aria-expanded]";
+  var OVERLAY_SELECTOR = "[role='listbox'],[role='menu'],[role='dialog'],[data-radix-popper-content-wrapper],[data-radix-select-content],[class*='popover'],[class*='dropdown-menu'],[class*='listbox'],[class*='menu-content']";
 
   function normalizeText(text) {
     return (text || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -1092,6 +1093,28 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
   function countCombos(el) {
     if (!el || !el.querySelectorAll) return 0;
     return el.querySelectorAll(COMBO_SELECTOR).length;
+  }
+
+  function isElementNode(node) {
+    return !!node && node.nodeType === 1;
+  }
+
+  function matchesSelector(node, selector) {
+    return !!(isElementNode(node) && node.matches && node.matches(selector));
+  }
+
+  function findClosestTrigger(node) {
+    if (!isElementNode(node)) return null;
+    if (matchesSelector(node, COMBO_SELECTOR)) return node;
+    if (!node.closest) return null;
+    return node.closest(COMBO_SELECTOR);
+  }
+
+  function isProbablyVisible(node) {
+    if (!isElementNode(node) || !window.getComputedStyle) return false;
+    var style = window.getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    return true;
   }
 
   function findTextElement(needles, root) {
@@ -1204,6 +1227,48 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
     }
   }
 
+  function repairTriggerContext(trigger) {
+    if (!trigger) return false;
+    relaxChain(trigger, 12, 1300);
+    if (trigger.style) {
+      trigger.style.setProperty("position", "relative", "important");
+      trigger.style.setProperty("z-index", "1400", "important");
+    }
+    if (trigger.parentElement) {
+      relaxChain(trigger.parentElement, 4, 1290);
+    }
+    return true;
+  }
+
+  function repairOverlayNode(overlay) {
+    if (!overlay) return false;
+    relaxChain(overlay, 10, 1500);
+    if (overlay.style) {
+      overlay.style.setProperty("position", "relative", "important");
+      overlay.style.setProperty("z-index", "1600", "important");
+      overlay.style.setProperty("overflow", "visible", "important");
+      overlay.style.setProperty("overflow-x", "visible", "important");
+      overlay.style.setProperty("overflow-y", "visible", "important");
+    }
+    var inner = overlay.querySelector ? overlay.querySelector("[role='listbox'],[role='menu'],[role='dialog']") : null;
+    if (inner) {
+      relaxChain(inner, 4, 1610);
+    }
+    return true;
+  }
+
+  function repairVisibleOverlays(root) {
+    var scope = root || document;
+    if (!scope.querySelectorAll) return false;
+    var nodes = scope.querySelectorAll(OVERLAY_SELECTOR);
+    var patched = false;
+    for (var i = 0; i < nodes.length; i++) {
+      if (!isProbablyVisible(nodes[i])) continue;
+      patched = repairOverlayNode(nodes[i]) || patched;
+    }
+    return patched;
+  }
+
   function isUsageRoute() {
     var hash = normalizeText(window.location.hash || "");
     return hash.indexOf("/usage") !== -1 || hash.indexOf("usage") !== -1 || hash.indexOf("\u7edf\u8ba1") !== -1;
@@ -1211,6 +1276,15 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
 
   function patchModelPriceDropdown() {
     if (!isUsageRoute()) return false;
+    var patched = false;
+    if (activeTrigger && document.contains(activeTrigger)) {
+      patched = repairTriggerContext(activeTrigger) || patched;
+    } else {
+      activeTrigger = null;
+    }
+    patched = repairVisibleOverlays(document.body || document) || patched;
+    if (patched) return true;
+
     var section = findModelPriceSection();
     if (!section) return false;
 
@@ -1222,15 +1296,15 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
 
     var trigger = row.querySelector(COMBO_SELECTOR);
     if (trigger && trigger.style) {
-      trigger.style.setProperty("position", "relative", "important");
-      trigger.style.setProperty("z-index", "1400", "important");
+      activeTrigger = trigger;
+      repairTriggerContext(trigger);
     }
     return true;
   }
 
   var observer = null;
   var scheduled = false;
-  var patchApplied = false;
+  var activeTrigger = null;
   var lastScheduleAt = 0;
   var scheduleGapMs = 180;
 
@@ -1242,6 +1316,7 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
 
   function schedulePatch() {
     if (!isUsageRoute()) {
+      activeTrigger = null;
       stopObserver();
       return;
     }
@@ -1251,10 +1326,10 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
     lastScheduleAt = now;
     setTimeout(function () {
       scheduled = false;
-      patchApplied = patchModelPriceDropdown();
-      if (patchApplied) {
-        stopObserver();
+      if (activeTrigger && !document.contains(activeTrigger)) {
+        activeTrigger = null;
       }
+      patchModelPriceDropdown();
     }, 30);
   }
 
@@ -1265,21 +1340,35 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
     }
     if (!window.MutationObserver || !document.body || observer) return;
     observer = new MutationObserver(function () {
-      if (patchApplied) {
-        stopObserver();
-        return;
-      }
       schedulePatch();
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["aria-expanded", "data-state", "class", "style", "hidden"],
+    });
+  }
+
+  function handleTriggerInteraction(event) {
+    if (!isUsageRoute() || !event) return;
+    var trigger = findClosestTrigger(event.target);
+    if (!trigger) return;
+    activeTrigger = trigger;
+    schedulePatch();
+    setTimeout(schedulePatch, 16);
+    setTimeout(schedulePatch, 80);
   }
 
   function handleRouteChange() {
-    patchApplied = false;
+    activeTrigger = null;
     setupObserver();
     schedulePatch();
   }
 
+  document.addEventListener("pointerdown", handleTriggerInteraction, true);
+  document.addEventListener("focusin", handleTriggerInteraction, true);
+  document.addEventListener("click", handleTriggerInteraction, true);
   window.addEventListener("hashchange", handleRouteChange, true);
   window.addEventListener("popstate", handleRouteChange, true);
   window.addEventListener("resize", schedulePatch, true);
