@@ -100,7 +100,7 @@ func TestInjectModelPriceDropdownClipPatch_IncludesSelectModelFallbackLabels(t *
 	}
 }
 
-func TestInjectModelPriceDropdownClipPatch_ContainsGenericOverlayRepairHooks(t *testing.T) {
+func TestInjectModelPriceDropdownClipPatch_DoesNotRegisterGlobalTriggerHooks(t *testing.T) {
 	input := []byte("<html><body><div>content</div></body></html>")
 	out := injectModelPriceDropdownClipPatch(input)
 	result := string(out)
@@ -108,12 +108,12 @@ func TestInjectModelPriceDropdownClipPatch_ContainsGenericOverlayRepairHooks(t *
 	for _, needle := range []string{
 		"pointerdown",
 		"focusin",
-		"data-radix-popper-content-wrapper",
-		"role='listbox'",
 		"activeTrigger",
+		"data-radix-popper-content-wrapper",
+		"OVERLAY_SELECTOR",
 	} {
-		if !strings.Contains(result, needle) {
-			t.Fatalf("expected model price dropdown clip patch to include generic overlay repair hook %q", needle)
+		if strings.Contains(result, needle) {
+			t.Fatalf("expected model price dropdown clip patch to avoid global trigger hook %q", needle)
 		}
 	}
 }
