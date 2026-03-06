@@ -1513,11 +1513,31 @@ func injectUsagePaginationPatch(html []byte) []byte {
   var CREDS_SECTION_EN = "credential statistics";
   var DETAILS_ROOT_ID = "cpa-usage-request-details-pagination";
   var CREDS_ROOT_ID = "cpa-usage-credential-pagination";
+  var FALLBACK_ROOT_ID = "cpa-usage-pagination-fallback-root";
   var latestUsagePayload = null;
   var renderScheduled = false;
+  var observer = null;
 
   function normalizeText(text) {
     return (text || "").toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  function isElementVisible(node) {
+    if (!node || !document.documentElement || !document.documentElement.contains(node)) return false;
+    if (node.closest && node.closest("#" + FALLBACK_ROOT_ID)) return false;
+    var style = window.getComputedStyle ? window.getComputedStyle(node) : null;
+    if (style) {
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+        return false;
+      }
+    }
+    if (typeof node.getBoundingClientRect === "function") {
+      var rect = node.getBoundingClientRect();
+      if (rect && rect.width === 0 && rect.height === 0) {
+        return false;
+      }
+    }
+    return true;
   }
 
   function isUsageRoute() {
@@ -1572,6 +1592,7 @@ func injectUsagePaginationPatch(html []byte) []byte {
   function findSection(needles) {
     var nodes = document.querySelectorAll("h1,h2,h3,h4,h5,h6,legend,label,strong,span,div,p");
     for (var i = 0; i < nodes.length; i++) {
+      if (!isElementVisible(nodes[i])) continue;
       var value = normalizeText(nodes[i].innerText || nodes[i].textContent || "");
       if (!value || value.length > 120) continue;
       for (var j = 0; j < needles.length; j++) {
@@ -1586,23 +1607,69 @@ func injectUsagePaginationPatch(html []byte) []byte {
   function findSectionContainer(heading) {
     var current = heading;
     for (var i = 0; i < 8 && current; i++) {
-      if (current.matches && current.matches("section,article,.card,.panel,[class*='card'],[class*='panel']")) {
+      if (current.matches && current.matches("section,article,.card,.panel,[class*='card'],[class*='panel']") && isElementVisible(current)) {
         return current;
       }
       current = current.parentElement;
     }
-    return heading ? heading.parentElement : null;
+    if (heading && heading.parentElement && isElementVisible(heading.parentElement)) {
+      return heading.parentElement;
+    }
+    return null;
   }
 
   function ensureHost(id, section) {
-    if (!section) return null;
+    if (!section || !isElementVisible(section)) return null;
     var host = document.getElementById(id);
-    if (host) return host;
+    if (host) {
+      if (isElementVisible(host) || isElementVisible(host.parentElement)) return host;
+      if (host.parentElement) host.parentElement.removeChild(host);
+    }
     host = document.createElement("div");
     host.id = id;
     host.style.marginTop = "12px";
     section.appendChild(host);
     return host;
+  }
+
+  function ensureFallbackRoot() {
+    var root = document.getElementById(FALLBACK_ROOT_ID);
+    if (root) return root;
+    root = document.createElement("div");
+    root.id = FALLBACK_ROOT_ID;
+    root.style.position = "fixed";
+    root.style.right = "16px";
+    root.style.bottom = "16px";
+    root.style.zIndex = "2147483647";
+    root.style.maxWidth = "min(92vw, 720px)";
+    root.style.maxHeight = "70vh";
+    root.style.overflow = "auto";
+    root.style.padding = "12px";
+    root.style.borderRadius = "10px";
+    root.style.background = "rgba(15, 23, 42, 0.94)";
+    root.style.color = "#e5e7eb";
+    root.style.boxShadow = "0 10px 30px rgba(15, 23, 42, 0.35)";
+    root.style.display = "none";
+    document.body.appendChild(root);
+    return root;
+  }
+
+  function ensureFallbackHost(id, title) {
+    var root = ensureFallbackRoot();
+    if (!root) return null;
+    var fallbackID = id + "-fallback";
+    var section = document.getElementById(fallbackID);
+    if (section) return section;
+    section = document.createElement("div");
+    section.id = fallbackID;
+    section.style.marginBottom = "12px";
+    var heading = document.createElement("div");
+    heading.textContent = title;
+    heading.style.fontWeight = "600";
+    heading.style.marginBottom = "6px";
+    section.appendChild(heading);
+    root.appendChild(section);
+    return section;
   }
 
   function createButton(label, disabled, onClick) {
@@ -1709,10 +1776,15 @@ func injectUsagePaginationPatch(html []byte) []byte {
 
   function renderUsagePaginationUI() {
     if (!isUsageRoute() || !latestUsagePayload) return;
+    var fallbackUsed = false;
 
     var credsHeading = findSection([CREDS_SECTION_ZH, CREDS_SECTION_EN]);
     var credsSection = findSectionContainer(credsHeading);
     var credsHost = ensureHost(CREDS_ROOT_ID, credsSection);
+    if (!credsHost) {
+      credsHost = ensureFallbackHost(CREDS_ROOT_ID, "凭证统计分页");
+      fallbackUsed = !!credsHost;
+    }
     if (credsHost && latestUsagePayload.api_pagination) {
       writeStoredPage(API_PAGE_KEY, latestUsagePayload.api_pagination.page || 1);
       renderPager(credsHost, "凭证统计分页", latestUsagePayload.api_pagination, API_PAGE_KEY);
@@ -1721,12 +1793,56 @@ func injectUsagePaginationPatch(html []byte) []byte {
     var detailsHeading = findSection([DETAILS_SECTION_ZH, DETAILS_SECTION_EN]);
     var detailsSection = findSectionContainer(detailsHeading);
     var detailsHost = ensureHost(DETAILS_ROOT_ID, detailsSection);
+    if (!detailsHost) {
+      detailsHost = ensureFallbackHost(DETAILS_ROOT_ID, "请求事件明细分页");
+      fallbackUsed = true;
+    }
     if (detailsHost && latestUsagePayload.request_details_page) {
       writeStoredPage(DETAIL_PAGE_KEY, latestUsagePayload.request_details_page.pagination && latestUsagePayload.request_details_page.pagination.page || 1);
       detailsHost.innerHTML = "";
       renderPager(detailsHost, "请求事件明细分页", latestUsagePayload.request_details_page.pagination, DETAIL_PAGE_KEY);
       renderRequestDetails(detailsHost, latestUsagePayload.request_details_page);
     }
+
+    var fallbackRoot = document.getElementById(FALLBACK_ROOT_ID);
+    if (fallbackRoot) {
+      fallbackRoot.style.display = fallbackUsed && isUsageRoute() ? "block" : "none";
+    }
+  }
+
+  function parsePayloadCandidate(raw) {
+    if (!raw) return null;
+    if (typeof raw === "object") return raw;
+    if (typeof raw !== "string") return null;
+    return JSON.parse(raw);
+  }
+
+  function readXHRPayload(xhr) {
+    if (!xhr) return null;
+    var responseType = (xhr.responseType || "").toLowerCase();
+    if (responseType === "json") {
+      return parsePayloadCandidate(xhr.response);
+    }
+    if (xhr.response && typeof xhr.response === "object" && responseType !== "document" && responseType !== "blob" && responseType !== "arraybuffer") {
+      return parsePayloadCandidate(xhr.response);
+    }
+    try {
+      if (xhr.responseText) {
+        return parsePayloadCandidate(xhr.responseText);
+      }
+    } catch (e) {
+    }
+    if (typeof xhr.response === "string" && xhr.response) {
+      return parsePayloadCandidate(xhr.response);
+    }
+    return null;
+  }
+
+  function updatePayloadAndSchedule(payload) {
+    latestUsagePayload = payload || null;
+    scheduleRender();
+    setTimeout(scheduleRender, 120);
+    setTimeout(scheduleRender, 500);
   }
 
   function scheduleRender() {
@@ -1757,8 +1873,7 @@ func injectUsagePaginationPatch(html []byte) []byte {
       return call.then(function (resp) {
         if (!resp || !resp.ok) return resp;
         return resp.clone().json().then(function (payload) {
-          latestUsagePayload = payload || null;
-          scheduleRender();
+          updatePayloadAndSchedule(payload);
           return resp;
         }).catch(function () {
           return resp;
@@ -1767,14 +1882,84 @@ func injectUsagePaginationPatch(html []byte) []byte {
     };
   }
 
-  window.addEventListener("hashchange", scheduleRender, true);
+  function patchXHR() {
+    if (!window.XMLHttpRequest || !window.XMLHttpRequest.prototype) return;
+    var proto = window.XMLHttpRequest.prototype;
+    if (proto.__cpaUsagePaginationPatched) return;
+    proto.__cpaUsagePaginationPatched = true;
+
+    var originalOpen = proto.open;
+    var originalSend = proto.send;
+
+    proto.open = function (method, url) {
+      this.__cpaUsageMethod = method;
+      this.__cpaUsageURL = url;
+      var nextURL = url;
+      var urlObj = toURL(url);
+      if (isUsageRoute() && /get/i.test(method || "GET") && isUsageAPI(urlObj)) {
+        nextURL = applyUsagePagination(urlObj).toString();
+        this.__cpaUsageURL = nextURL;
+      }
+      return originalOpen.apply(this, [method, nextURL].concat(Array.prototype.slice.call(arguments, 2)));
+    };
+
+    proto.send = function () {
+      if (!this.__cpaUsagePaginationListenerAttached) {
+        this.__cpaUsagePaginationListenerAttached = true;
+        this.addEventListener("loadend", function () {
+          try {
+            var urlObj = toURL(this.__cpaUsageURL);
+            if (!isUsageRoute() || !isUsageAPI(urlObj) || this.status < 200 || this.status >= 300) {
+              return;
+            }
+            var payload = readXHRPayload(this);
+            if (payload) updatePayloadAndSchedule(payload);
+          } catch (e) {
+          }
+        });
+      }
+      return originalSend.apply(this, arguments);
+    };
+  }
+
+  function setupObserver() {
+    if (!window.MutationObserver || observer || !document.body) return;
+    observer = new MutationObserver(function () {
+      if (latestUsagePayload && isUsageRoute()) {
+        scheduleRender();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function stopObserver() {
+    if (!observer) return;
+    observer.disconnect();
+    observer = null;
+  }
+
+  function handleRouteChange() {
+    if (isUsageRoute()) {
+      setupObserver();
+      scheduleRender();
+      setTimeout(scheduleRender, 300);
+      return;
+    }
+    stopObserver();
+    var root = document.getElementById(FALLBACK_ROOT_ID);
+    if (root) root.style.display = "none";
+  }
+
+  patchXHR();
+  window.addEventListener("hashchange", handleRouteChange, true);
+  window.addEventListener("popstate", handleRouteChange, true);
   window.addEventListener("resize", scheduleRender, true);
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () {
-      scheduleRender();
+      handleRouteChange();
     }, { once: true });
   } else {
-    scheduleRender();
+    handleRouteChange();
   }
 })();
 </script>`)

@@ -170,6 +170,11 @@ func TestInjectUsagePaginationPatch_InsertsExpectedHooks(t *testing.T) {
 		"request_details_page",
 		"window.location.reload()",
 		"sessionStorage",
+		"XMLHttpRequest",
+		"MutationObserver",
+		"cpa-usage-pagination-fallback-root",
+		"responseType",
+		"getBoundingClientRect",
 	} {
 		if !strings.Contains(result, needle) {
 			t.Fatalf("expected usage pagination patch to include %q", needle)
