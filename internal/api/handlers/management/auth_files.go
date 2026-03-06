@@ -747,7 +747,7 @@ func (h *Handler) CleanCodex401AuthFiles(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	resp := codex401CleanResponse{Status: "ok", Items: make([]codex401CleanItem, 0)}
-	for _, auth := range h.authManager.List() {
+	for _, auth := range h.codex401CleanerCandidates(ctx) {
 		if !isCodex401CleanerCandidate(auth) {
 			continue
 		}
@@ -789,6 +789,59 @@ func (h *Handler) CleanCodex401AuthFiles(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, resp)
+}
+
+func (h *Handler) codex401CleanerCandidates(ctx context.Context) []*coreauth.Auth {
+	if h == nil {
+		return nil
+	}
+	primary := make([]*coreauth.Auth, 0)
+	seen := make(map[string]struct{})
+	if h.authManager != nil {
+		for _, auth := range h.authManager.List() {
+			if auth == nil {
+				continue
+			}
+			key := strings.TrimSpace(auth.ID)
+			if key == "" {
+				key = strings.TrimSpace(auth.FileName)
+			}
+			if key != "" {
+				seen[key] = struct{}{}
+			}
+			primary = append(primary, auth)
+		}
+	}
+	if len(primary) > 0 {
+		return primary
+	}
+
+	store := h.tokenStoreWithBaseDir()
+	if store == nil {
+		return primary
+	}
+	items, err := store.List(ctx)
+	if err != nil {
+		log.WithError(err).Warn("failed to list auth records from token store for codex 401 cleaner")
+		return primary
+	}
+	for _, auth := range items {
+		if auth == nil {
+			continue
+		}
+		key := strings.TrimSpace(auth.ID)
+		if key == "" {
+			key = strings.TrimSpace(auth.FileName)
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		if key != "" {
+			seen[key] = struct{}{}
+		}
+		primary = append(primary, auth)
+	}
+	return primary
 }
 
 func isCodex401CleanerCandidate(auth *coreauth.Auth) bool {

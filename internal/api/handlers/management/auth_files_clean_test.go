@@ -206,3 +206,70 @@ func TestCleanCodex401AuthFiles_ReportsDeleteFailure(t *testing.T) {
 		t.Fatalf("expected item result delete_failed, got %#v", payload.Items[0]["result"])
 	}
 }
+
+func TestCleanCodex401AuthFiles_FallsBackToTokenStoreRecords(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	probeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(probeServer.Close)
+
+	originalProbeURL := codex401ProbeURL
+	codex401ProbeURL = probeServer.URL
+	t.Cleanup(func() { codex401ProbeURL = originalProbeURL })
+
+	authDir := t.TempDir()
+	badFile := filepath.Join(authDir, "codex-store-only.json")
+	if err := os.WriteFile(badFile, []byte(`{"type":"codex"}`), 0o600); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	store := &memoryAuthStore{}
+	store.items = map[string]*coreauth.Auth{
+		"codex-store-only.json": {
+			ID:       "codex-store-only.json",
+			FileName: "codex-store-only.json",
+			Provider: "codex",
+			Attributes: map[string]string{
+				"path": badFile,
+			},
+			Metadata: map[string]any{
+				"type":         "codex",
+				"access_token": "bad-token",
+			},
+		},
+	}
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+	h.tokenStore = store
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/auth-files/clean-codex-401", nil)
+
+	h.CleanCodex401AuthFiles(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Scanned int `json:"scanned"`
+		Deleted int `json:"deleted"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Scanned != 1 {
+		t.Fatalf("expected scanned=1 from token store fallback, got %d", payload.Scanned)
+	}
+	if payload.Deleted != 1 {
+		t.Fatalf("expected deleted=1 from token store fallback, got %d", payload.Deleted)
+	}
+	if _, err := os.Stat(badFile); !os.IsNotExist(err) {
+		t.Fatalf("expected store-only file removed, stat err: %v", err)
+	}
+}
