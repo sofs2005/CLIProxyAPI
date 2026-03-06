@@ -12,18 +12,19 @@ import (
 )
 
 const logDirCleanerInterval = time.Minute
+const logDirRetention = 7 * 24 * time.Hour
 
 var logDirCleanerCancel context.CancelFunc
 
 func configureLogDirCleanerLocked(logDir string, maxTotalSizeMB int, protectedPath string) {
 	stopLogDirCleanerLocked()
 
-	if maxTotalSizeMB <= 0 {
+	if maxTotalSizeMB <= 0 && logDirRetention <= 0 {
 		return
 	}
 
 	maxBytes := int64(maxTotalSizeMB) * 1024 * 1024
-	if maxBytes <= 0 {
+	if maxBytes <= 0 && logDirRetention <= 0 {
 		return
 	}
 
@@ -50,6 +51,13 @@ func runLogDirCleaner(ctx context.Context, logDir string, maxBytes int64, protec
 	defer ticker.Stop()
 
 	cleanOnce := func() {
+		deletedByAge, errRetention := enforceLogDirRetention(logDir, logDirRetention, protectedPath, time.Now())
+		if errRetention != nil {
+			log.WithError(errRetention).Warn("logging: failed to enforce log retention")
+		} else if deletedByAge > 0 {
+			log.Debugf("logging: removed %d expired log file(s) by retention policy", deletedByAge)
+		}
+
 		deleted, errClean := enforceLogDirSizeLimit(logDir, maxBytes, protectedPath)
 		if errClean != nil {
 			log.WithError(errClean).Warn("logging: failed to enforce log directory size limit")
@@ -69,6 +77,64 @@ func runLogDirCleaner(ctx context.Context, logDir string, maxBytes int64, protec
 			cleanOnce()
 		}
 	}
+}
+
+func enforceLogDirRetention(logDir string, maxAge time.Duration, protectedPath string, now time.Time) (int, error) {
+	if maxAge <= 0 {
+		return 0, nil
+	}
+
+	dir := strings.TrimSpace(logDir)
+	if dir == "" {
+		return 0, nil
+	}
+	dir = filepath.Clean(dir)
+
+	entries, errRead := os.ReadDir(dir)
+	if errRead != nil {
+		if os.IsNotExist(errRead) {
+			return 0, nil
+		}
+		return 0, errRead
+	}
+
+	protected := strings.TrimSpace(protectedPath)
+	if protected != "" {
+		protected = filepath.Clean(protected)
+	}
+
+	cutoff := now.Add(-maxAge)
+	deleted := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !isLogFileName(name) {
+			continue
+		}
+		info, errInfo := entry.Info()
+		if errInfo != nil {
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if protected != "" && filepath.Clean(path) == protected {
+			continue
+		}
+		if !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if errRemove := os.Remove(path); errRemove != nil {
+			log.WithError(errRemove).Warnf("logging: failed to remove expired log file: %s", filepath.Base(path))
+			continue
+		}
+		deleted++
+	}
+
+	return deleted, nil
 }
 
 func enforceLogDirSizeLimit(logDir string, maxBytes int64, protectedPath string) (int, error) {

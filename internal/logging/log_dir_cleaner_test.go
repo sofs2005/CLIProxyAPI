@@ -57,6 +57,34 @@ func TestEnforceLogDirSizeLimitSkipsProtected(t *testing.T) {
 	}
 }
 
+func TestEnforceLogDirRetentionDeletesExpiredFiles(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 3, 6, 12, 0, 0, 0, time.UTC)
+	protected := filepath.Join(dir, "main.log")
+
+	writeLogFile(t, filepath.Join(dir, "expired.log"), 10, now.Add(-8*24*time.Hour))
+	writeLogFile(t, filepath.Join(dir, "recent.log"), 10, now.Add(-2*24*time.Hour))
+	writeLogFile(t, protected, 10, now.Add(-30*24*time.Hour))
+
+	deleted, err := enforceLogDirRetention(dir, 7*24*time.Hour, protected, now)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected 1 deleted file, got %d", deleted)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "expired.log")); !os.IsNotExist(err) {
+		t.Fatalf("expected expired.log to be removed, stat error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "recent.log")); err != nil {
+		t.Fatalf("expected recent.log to remain, stat error: %v", err)
+	}
+	if _, err := os.Stat(protected); err != nil {
+		t.Fatalf("expected protected main.log to remain, stat error: %v", err)
+	}
+}
+
 func writeLogFile(t *testing.T, path string, size int, modTime time.Time) {
 	t.Helper()
 

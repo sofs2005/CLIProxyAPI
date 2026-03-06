@@ -1506,6 +1506,7 @@ func injectUsagePaginationPatch(html []byte) []byte {
 
   var API_PAGE_KEY = "cpa_usage_api_page";
   var DETAIL_PAGE_KEY = "cpa_usage_detail_page";
+  var PAGINATION_REQUEST_FLAG = "cpa_pagination";
   var PAGE_SIZE = 50;
   var DETAILS_SECTION_ZH = "\u8bf7\u6c42\u4e8b\u4ef6\u660e\u7ec6";
   var DETAILS_SECTION_EN = "request event details";
@@ -1515,6 +1516,7 @@ func injectUsagePaginationPatch(html []byte) []byte {
   var CREDS_ROOT_ID = "cpa-usage-credential-pagination";
   var FALLBACK_ROOT_ID = "cpa-usage-pagination-fallback-root";
   var latestUsagePayload = null;
+  var latestUsageRequestURL = "";
   var renderScheduled = false;
   var observer = null;
 
@@ -1557,6 +1559,10 @@ func injectUsagePaginationPatch(html []byte) []byte {
     return !!urlObj && /\/v0\/management\/usage$/i.test(urlObj.pathname || "");
   }
 
+  function isPaginationRequest(urlObj) {
+    return !!urlObj && urlObj.searchParams.get(PAGINATION_REQUEST_FLAG) === "1";
+  }
+
   function readStoredPage(key) {
     try {
       var raw = window.sessionStorage ? window.sessionStorage.getItem(key) : "";
@@ -1580,13 +1586,51 @@ func injectUsagePaginationPatch(html []byte) []byte {
 
   function applyUsagePagination(urlObj) {
     var next = new URL(urlObj.toString());
+    next.searchParams.delete(PAGINATION_REQUEST_FLAG);
+    next.searchParams.delete("api_page");
+    next.searchParams.delete("api_page_size");
+    next.searchParams.delete("detail_page");
+    next.searchParams.delete("detail_page_size");
+    if (!next.searchParams.has("window_hours") && !next.searchParams.has("hours")) {
+      next.searchParams.set("window_hours", "0");
+    }
     next.searchParams.set("compact", "1");
     next.searchParams.set("details", "0");
     next.searchParams.set("api_page", String(readStoredPage(API_PAGE_KEY)));
     next.searchParams.set("api_page_size", String(PAGE_SIZE));
     next.searchParams.set("detail_page", String(readStoredPage(DETAIL_PAGE_KEY)));
     next.searchParams.set("detail_page_size", String(PAGE_SIZE));
+    next.searchParams.set(PAGINATION_REQUEST_FLAG, "1");
     return next;
+  }
+
+  function buildUsageBaseURL(urlObj, payload) {
+    if (!urlObj) return null;
+    var next = new URL(urlObj.toString());
+    next.searchParams.delete(PAGINATION_REQUEST_FLAG);
+    next.searchParams.delete("api_page");
+    next.searchParams.delete("api_page_size");
+    next.searchParams.delete("detail_page");
+    next.searchParams.delete("detail_page_size");
+    next.searchParams.delete("compact");
+    next.searchParams.delete("details");
+    if (payload && typeof payload.window_hours !== "undefined") {
+      next.searchParams.delete("hours");
+      next.searchParams.set("window_hours", String(payload.window_hours || 0));
+    } else if (!next.searchParams.has("window_hours") && !next.searchParams.has("hours")) {
+      next.searchParams.set("window_hours", "0");
+    }
+    return next;
+  }
+
+  function loadUsagePage() {
+    if (!isUsageRoute() || !latestUsageRequestURL || typeof window.fetch !== "function") return;
+    var urlObj = toURL(latestUsageRequestURL);
+    if (!isUsageAPI(urlObj)) return;
+    var nextURL = applyUsagePagination(urlObj);
+    if (!nextURL) return;
+    window.fetch(nextURL.toString(), { method: "GET" }).catch(function () {
+    });
   }
 
   function findSection(needles) {
@@ -1702,12 +1746,12 @@ func injectUsagePaginationPatch(html []byte) []byte {
 
     wrap.appendChild(createButton("上一页", pagination.page <= 1, function () {
       writeStoredPage(storageKey, pagination.page - 1);
-      window.location.reload();
+      loadUsagePage();
     }));
 
     wrap.appendChild(createButton("下一页", pagination.total_pages <= 0 || pagination.page >= pagination.total_pages, function () {
       writeStoredPage(storageKey, pagination.page + 1);
-      window.location.reload();
+      loadUsagePage();
     }));
 
     var info = document.createElement("span");
@@ -1845,6 +1889,14 @@ func injectUsagePaginationPatch(html []byte) []byte {
     setTimeout(scheduleRender, 500);
   }
 
+  function updateNativeUsageState(urlObj, payload) {
+    if (!isUsageRoute()) return;
+    var nextURL = buildUsageBaseURL(urlObj, payload);
+    if (!nextURL) return;
+    latestUsageRequestURL = nextURL.toString();
+    loadUsagePage();
+  }
+
   function scheduleRender() {
     if (renderScheduled) return;
     renderScheduled = true;
@@ -1859,21 +1911,18 @@ func injectUsagePaginationPatch(html []byte) []byte {
     window.fetch = function (input, init) {
       var rawURL = typeof input === "string" ? input : (input && input.url);
       var urlObj = toURL(rawURL);
-      if (!isUsageRoute() || !isUsageAPI(urlObj)) {
-        return originalFetch.apply(this, arguments);
-      }
-
-      var nextURL = applyUsagePagination(urlObj);
-      var call;
-      if (typeof Request !== "undefined" && input instanceof Request) {
-        call = originalFetch.call(this, new Request(nextURL.toString(), input), init);
-      } else {
-        call = originalFetch.call(this, nextURL.toString(), init);
+      var call = originalFetch.apply(this, arguments);
+      if (!isUsageAPI(urlObj)) {
+        return call;
       }
       return call.then(function (resp) {
         if (!resp || !resp.ok) return resp;
         return resp.clone().json().then(function (payload) {
-          updatePayloadAndSchedule(payload);
+          if (isPaginationRequest(urlObj)) {
+            updatePayloadAndSchedule(payload);
+          } else {
+            updateNativeUsageState(urlObj, payload);
+          }
           return resp;
         }).catch(function () {
           return resp;
@@ -1894,13 +1943,7 @@ func injectUsagePaginationPatch(html []byte) []byte {
     proto.open = function (method, url) {
       this.__cpaUsageMethod = method;
       this.__cpaUsageURL = url;
-      var nextURL = url;
-      var urlObj = toURL(url);
-      if (isUsageRoute() && /get/i.test(method || "GET") && isUsageAPI(urlObj)) {
-        nextURL = applyUsagePagination(urlObj).toString();
-        this.__cpaUsageURL = nextURL;
-      }
-      return originalOpen.apply(this, [method, nextURL].concat(Array.prototype.slice.call(arguments, 2)));
+      return originalOpen.apply(this, arguments);
     };
 
     proto.send = function () {
@@ -1909,11 +1952,16 @@ func injectUsagePaginationPatch(html []byte) []byte {
         this.addEventListener("loadend", function () {
           try {
             var urlObj = toURL(this.__cpaUsageURL);
-            if (!isUsageRoute() || !isUsageAPI(urlObj) || this.status < 200 || this.status >= 300) {
+            if (!isUsageAPI(urlObj) || this.status < 200 || this.status >= 300) {
               return;
             }
             var payload = readXHRPayload(this);
-            if (payload) updatePayloadAndSchedule(payload);
+            if (!payload) return;
+            if (isPaginationRequest(urlObj)) {
+              updatePayloadAndSchedule(payload);
+              return;
+            }
+            updateNativeUsageState(urlObj, payload);
           } catch (e) {
           }
         });
@@ -1925,7 +1973,7 @@ func injectUsagePaginationPatch(html []byte) []byte {
   function setupObserver() {
     if (!window.MutationObserver || observer || !document.body) return;
     observer = new MutationObserver(function () {
-      if (latestUsagePayload && isUsageRoute()) {
+      if ((latestUsagePayload || latestUsageRequestURL) && isUsageRoute()) {
         scheduleRender();
       }
     });
@@ -1942,6 +1990,9 @@ func injectUsagePaginationPatch(html []byte) []byte {
     if (isUsageRoute()) {
       setupObserver();
       scheduleRender();
+      if (latestUsageRequestURL) {
+        loadUsagePage();
+      }
       setTimeout(scheduleRender, 300);
       return;
     }
