@@ -758,7 +758,7 @@ func (h *Handler) CleanCodex401AuthFiles(c *gin.Context) {
 		if errProbe != nil {
 			resp.Failed++
 			resp.Items = append(resp.Items, codex401CleanItem{
-				Name:      strings.TrimSpace(auth.FileName),
+				Name:      authCleanerName(auth),
 				AuthIndex: auth.Index,
 				Provider:  strings.TrimSpace(auth.Provider),
 				Result:    "probe_failed",
@@ -772,13 +772,13 @@ func (h *Handler) CleanCodex401AuthFiles(c *gin.Context) {
 
 		resp.Matched401++
 		item := codex401CleanItem{
-			Name:       strings.TrimSpace(auth.FileName),
+			Name:       authCleanerName(auth),
 			AuthIndex:  auth.Index,
 			Provider:   strings.TrimSpace(auth.Provider),
 			StatusCode: statusCode,
 			Result:     "deleted",
 		}
-		if errDelete := h.deleteAuthFileByName(ctx, auth.FileName); errDelete != nil {
+		if errDelete := h.deleteAuthFileByName(ctx, authCleanerDeleteKey(auth)); errDelete != nil {
 			resp.Failed++
 			item.Result = "delete_failed"
 			item.Error = errDelete.Error()
@@ -851,7 +851,33 @@ func isCodex401CleanerCandidate(auth *coreauth.Auth) bool {
 	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
 		return false
 	}
-	return strings.TrimSpace(auth.FileName) != ""
+	return authCleanerDeleteKey(auth) != ""
+}
+
+func authCleanerName(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(auth.FileName); name != "" {
+		return filepath.Base(name)
+	}
+	if path := strings.TrimSpace(authAttribute(auth, "path")); path != "" {
+		return filepath.Base(path)
+	}
+	return filepath.Base(strings.TrimSpace(auth.ID))
+}
+
+func authCleanerDeleteKey(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(auth.FileName); name != "" {
+		return name
+	}
+	if path := strings.TrimSpace(authAttribute(auth, "path")); path != "" {
+		return filepath.Base(path)
+	}
+	return strings.TrimSpace(auth.ID)
 }
 
 func (h *Handler) probeCodex401(ctx context.Context, auth *coreauth.Auth) (int, error) {

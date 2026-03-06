@@ -273,3 +273,70 @@ func TestCleanCodex401AuthFiles_FallsBackToTokenStoreRecords(t *testing.T) {
 		t.Fatalf("expected store-only file removed, stat err: %v", err)
 	}
 }
+
+func TestCleanCodex401AuthFiles_HandlesWatcherStyleAuthWithoutFileName(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	probeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(probeServer.Close)
+
+	originalProbeURL := codex401ProbeURL
+	codex401ProbeURL = probeServer.URL
+	t.Cleanup(func() { codex401ProbeURL = originalProbeURL })
+
+	authDir := t.TempDir()
+	badFile := filepath.Join(authDir, "codex-watcher-style.json")
+	if err := os.WriteFile(badFile, []byte(`{"type":"codex"}`), 0o600); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "codex-watcher-style.json",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"path": badFile,
+		},
+		Metadata: map[string]any{
+			"type":         "codex",
+			"access_token": "bad-token",
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+	h.tokenStore = store
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/auth-files/clean-codex-401", nil)
+
+	h.CleanCodex401AuthFiles(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Scanned int `json:"scanned"`
+		Deleted int `json:"deleted"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Scanned != 1 {
+		t.Fatalf("expected scanned=1 for watcher-style auth, got %d", payload.Scanned)
+	}
+	if payload.Deleted != 1 {
+		t.Fatalf("expected deleted=1 for watcher-style auth, got %d", payload.Deleted)
+	}
+	if _, err := os.Stat(badFile); !os.IsNotExist(err) {
+		t.Fatalf("expected watcher-style file removed, stat err: %v", err)
+	}
+}
