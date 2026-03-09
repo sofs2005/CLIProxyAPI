@@ -731,7 +731,7 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     if (document.getElementById(STYLE_ID)) return;
     var style = document.createElement("style");
     style.id = STYLE_ID;
-    style.textContent = "#"+ROOT_ID+"{display:none;gap:8px;align-items:center;flex-wrap:wrap;box-sizing:border-box;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;max-width:min(100%,560px);box-shadow:0 8px 24px rgba(0,0,0,.18)}.cpa-auth-heading-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.cpa-auth-heading-row>#"+ROOT_ID+".next-to-heading{margin-left:auto}#"+ROOT_ID+".next-to-heading{position:relative;z-index:1;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".topbar-fallback{position:relative;z-index:1;margin:0 0 12px auto;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".floating-fallback{position:fixed;top:72px;right:16px;z-index:2147483647;max-width:min(calc(100vw - 32px),460px)}#"+ROOT_ID+" label{white-space:nowrap;font-weight:600}#"+ROOT_ID+" select{background:#1f1f1f;color:#fff;border:1px solid #666;border-radius:6px;padding:2px 6px;min-width:112px}#"+ROOT_ID+" button{background:#8b1e1e;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:6px;padding:4px 10px;cursor:pointer}#"+ROOT_ID+" button[disabled]{opacity:.55;cursor:not-allowed}#"+STATUS_ID+"{max-width:230px;line-height:1.35;color:rgba(255,255,255,.88)}#"+STATUS_ID+".error{color:#ffb4b4}@media (max-width: 768px){#"+ROOT_ID+"{width:100%;max-width:100%}.cpa-auth-heading-row>#"+ROOT_ID+".next-to-heading,#"+ROOT_ID+".topbar-fallback{margin-left:0}#"+ROOT_ID+".floating-fallback{left:12px;right:12px;top:auto;bottom:12px;max-width:none}}";
+    style.textContent = "#"+ROOT_ID+"{display:none;gap:8px;align-items:center;flex-wrap:wrap;box-sizing:border-box;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;max-width:min(100%,560px);box-shadow:0 8px 24px rgba(0,0,0,.18)}#"+ROOT_ID+".before-header-actions{position:relative;z-index:1;margin-left:auto;margin-right:12px;width:fit-content;max-width:min(100%,560px)}#"+ROOT_ID+".topbar-fallback{position:relative;z-index:1;margin:0 0 12px auto;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".floating-fallback{position:fixed;top:72px;right:16px;z-index:2147483647;max-width:min(calc(100vw - 32px),460px)}#"+ROOT_ID+" label{white-space:nowrap;font-weight:600}#"+ROOT_ID+" select{background:#1f1f1f;color:#fff;border:1px solid #666;border-radius:6px;padding:2px 6px;min-width:112px}#"+ROOT_ID+" button{background:#8b1e1e;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:6px;padding:4px 10px;cursor:pointer}#"+ROOT_ID+" button[disabled]{opacity:.55;cursor:not-allowed}#"+STATUS_ID+"{max-width:230px;line-height:1.35;color:rgba(255,255,255,.88)}#"+STATUS_ID+".error{color:#ffb4b4}@media (max-width: 768px){#"+ROOT_ID+"{width:100%;max-width:100%}#"+ROOT_ID+".before-header-actions,#"+ROOT_ID+".topbar-fallback{margin-left:0;margin-right:0}#"+ROOT_ID+".floating-fallback{left:12px;right:12px;top:auto;bottom:12px;max-width:none}}";
     document.head.appendChild(style);
   }
 
@@ -762,22 +762,36 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     return hasAnyText(text, ["refresh", "upload", "delete", "clean", "refreshing", "\u5237\u65b0", "\u4e0a\u4f20", "\u5220\u9664", "\u6e05\u7406"]);
   }
 
-  function findAuthFilesHeading() {
-    var headings = document.querySelectorAll("h1,h2,h3,[role='heading']");
-    for (var i = 0; i < headings.length; i++) {
-      if (!isVisible(headings[i])) continue;
-      var headingText = normalizeText(headings[i].innerText || headings[i].textContent || "");
-      if (headingText.indexOf("auth file") !== -1 || headingText.indexOf("auth files") !== -1 || headingText.indexOf("\u8ba4\u8bc1\u6587\u4ef6") !== -1) {
-        return headings[i];
+  function findAuthFilesCardHeader() {
+    var headers = document.querySelectorAll(".card-header");
+    for (var i = 0; i < headers.length; i++) {
+      var header = headers[i];
+      if (!isVisible(header)) continue;
+      var title = null;
+      for (var j = 0; j < header.children.length; j++) {
+        var child = header.children[j];
+        if (child.classList && child.classList.contains("title")) {
+          title = child;
+          break;
+        }
+      }
+      if (!title) {
+        title = header.querySelector(".title");
+      }
+      if (!title) continue;
+      var titleText = normalizeText(title.innerText || title.textContent || "");
+      if (titleText.indexOf("management") !== -1 || titleText.indexOf("\u7ba1\u7406") !== -1) continue;
+      if (titleText.indexOf("auth file") !== -1 || titleText.indexOf("auth files") !== -1 || titleText.indexOf("\u8ba4\u8bc1\u6587\u4ef6") !== -1) {
+        return header;
       }
     }
     return null;
   }
 
   function findAuthFilesPageRoot() {
-    var heading = findAuthFilesHeading();
-    if (heading) {
-      var current = heading;
+    var cardHeader = findAuthFilesCardHeader();
+    if (cardHeader) {
+      var current = cardHeader;
       for (var i = 0; i < 7 && current; i++) {
         if (current.querySelectorAll && isVisible(current)) {
           var buttons = current.querySelectorAll("button,[role='button'],a");
@@ -801,28 +815,14 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     return null;
   }
 
-  function findHeadingRow(heading) {
-    if (!heading) return null;
-    var current = heading.parentElement;
-    for (var i = 0; i < 4 && current; i++) {
-      if (!isVisible(current)) {
-        current = current.parentElement;
-        continue;
-      }
-      if (current.querySelector("table,form")) {
-        current = current.parentElement;
-        continue;
-      }
-      if (current.childElementCount > 4) {
-        current = current.parentElement;
-        continue;
-      }
-      var buttons = current.querySelectorAll("button,[role='button'],a");
-      if (buttons.length > 0) {
-        current = current.parentElement;
-        continue;
-      }
-      return current;
+  function findHeaderActionsContainer(cardHeader) {
+    if (!cardHeader || !cardHeader.children) return null;
+    for (var i = 0; i < cardHeader.children.length; i++) {
+      var child = cardHeader.children[i];
+      if (!isVisible(child)) continue;
+      if (child.classList && child.classList.contains("title")) continue;
+      var buttons = child.querySelectorAll ? child.querySelectorAll("button,[role='button'],a") : [];
+      if (buttons.length >= 2) return child;
     }
     return null;
   }
@@ -898,22 +898,17 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
 
   function applyMountMode(root, mode) {
     if (!root) return;
-    root.classList.remove("next-to-heading", "topbar-fallback", "floating-fallback");
+    root.classList.remove("before-header-actions", "topbar-fallback", "floating-fallback");
     root.classList.add(mode || "floating-fallback");
   }
 
-  function mountNextToHeading(root, heading) {
-    if (!root || !heading) return false;
-    var row = findHeadingRow(heading);
-    if (!row) return false;
-    if (row.classList) {
-      row.classList.add("cpa-auth-heading-row");
+  function mountBeforeHeaderActions(root, cardHeader, actions) {
+    if (!root || !cardHeader || !actions) return false;
+    if (!cardHeader.contains(actions)) return false;
+    if (root.parentElement !== cardHeader || root.nextElementSibling !== actions) {
+      cardHeader.insertBefore(root, actions);
     }
-    if (!row.contains(heading)) return false;
-    if (root.parentElement !== row || row.lastElementChild !== root) {
-      row.appendChild(root);
-    }
-    applyMountMode(root, "next-to-heading");
+    applyMountMode(root, "before-header-actions");
     return true;
   }
 
@@ -939,8 +934,9 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     var root = ensureControl();
     if (!isAuthFilesRoute()) return root;
     var pageRoot = findAuthFilesPageRoot();
-    var heading = findAuthFilesHeading();
-    if (mountNextToHeading(root, heading)) return root;
+    var cardHeader = findAuthFilesCardHeader();
+    var actions = findHeaderActionsContainer(cardHeader);
+    if (mountBeforeHeaderActions(root, cardHeader, actions)) return root;
     if (mountIntoPageRoot(root, pageRoot)) return root;
     mountFloatingFallback(root);
     return root;
