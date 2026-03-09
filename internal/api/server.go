@@ -724,13 +724,107 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
   var cachedAuthHeaderName = "";
   var cachedAuthHeaderValue = "";
   var cleanerBusy = false;
+  var mountObserver = null;
+  var remountTimer = 0;
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
     var style = document.createElement("style");
     style.id = STYLE_ID;
-    style.textContent = "#"+ROOT_ID+"{position:fixed;right:16px;bottom:16px;z-index:2147483647;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;display:none;gap:8px;align-items:center;flex-wrap:wrap;max-width:min(90vw,460px)}#"+ROOT_ID+" label{white-space:nowrap}#"+ROOT_ID+" select{background:#1f1f1f;color:#fff;border:1px solid #666;border-radius:6px;padding:2px 6px;min-width:112px}#"+ROOT_ID+" button{background:#8b1e1e;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:6px;padding:4px 10px;cursor:pointer}#"+ROOT_ID+" button[disabled]{opacity:.55;cursor:not-allowed}#"+STATUS_ID+"{max-width:230px;line-height:1.35;color:rgba(255,255,255,.88)}#"+STATUS_ID+".error{color:#ffb4b4}";
+    style.textContent = "#"+ROOT_ID+"{display:none;gap:8px;align-items:center;flex-wrap:wrap;box-sizing:border-box;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;max-width:min(100%,560px);box-shadow:0 8px 24px rgba(0,0,0,.18)}#"+ROOT_ID+".inline{position:relative;z-index:1;margin-left:auto;max-width:min(100%,640px)}#"+ROOT_ID+".topbar-fallback{position:relative;z-index:1;margin:0 0 12px auto;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".floating-fallback{position:fixed;top:72px;right:16px;z-index:2147483647;max-width:min(calc(100vw - 32px),460px)}#"+ROOT_ID+" label{white-space:nowrap;font-weight:600}#"+ROOT_ID+" select{background:#1f1f1f;color:#fff;border:1px solid #666;border-radius:6px;padding:2px 6px;min-width:112px}#"+ROOT_ID+" button{background:#8b1e1e;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:6px;padding:4px 10px;cursor:pointer}#"+ROOT_ID+" button[disabled]{opacity:.55;cursor:not-allowed}#"+STATUS_ID+"{max-width:230px;line-height:1.35;color:rgba(255,255,255,.88)}#"+STATUS_ID+".error{color:#ffb4b4}@media (max-width: 768px){#"+ROOT_ID+"{width:100%;max-width:100%}#"+ROOT_ID+".inline,#"+ROOT_ID+".topbar-fallback{margin-left:0}#"+ROOT_ID+".floating-fallback{left:12px;right:12px;top:auto;bottom:12px;max-width:none}}";
     document.head.appendChild(style);
+  }
+
+  function normalizeText(value) {
+    return (value || "").toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  function hasAnyText(value, needles) {
+    var text = normalizeText(value);
+    if (!text) return false;
+    for (var i = 0; i < needles.length; i++) {
+      if (text.indexOf(needles[i]) !== -1) return true;
+    }
+    return false;
+  }
+
+  function isVisible(node) {
+    if (!node || !node.getBoundingClientRect) return false;
+    var rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function getButtonLikeText(node) {
+    return normalizeText((node && (node.innerText || node.textContent)) || "");
+  }
+
+  function isAuthFilesActionText(text) {
+    return hasAnyText(text, ["refresh", "upload", "delete", "clean", "refreshing", "\u5237\u65b0", "\u4e0a\u4f20", "\u5220\u9664", "\u6e05\u7406"]);
+  }
+
+  function findAuthFilesHeading() {
+    var headings = document.querySelectorAll("h1,h2,h3,[role='heading']");
+    for (var i = 0; i < headings.length; i++) {
+      var headingText = normalizeText(headings[i].innerText || headings[i].textContent || "");
+      if (headingText.indexOf("auth file") !== -1 || headingText.indexOf("auth files") !== -1 || headingText.indexOf("\u8ba4\u8bc1\u6587\u4ef6") !== -1) {
+        return headings[i];
+      }
+    }
+    return null;
+  }
+
+  function findAuthFilesPageRoot() {
+    var heading = findAuthFilesHeading();
+    if (heading) {
+      var current = heading;
+      for (var i = 0; i < 7 && current; i++) {
+        if (current.querySelectorAll && isVisible(current)) {
+          var buttons = current.querySelectorAll("button,[role='button'],a");
+          var actionCount = 0;
+          for (var j = 0; j < buttons.length && actionCount < 3; j++) {
+            if (isAuthFilesActionText(getButtonLikeText(buttons[j]))) actionCount++;
+          }
+          if (actionCount >= 2) return current;
+        }
+        current = current.parentElement;
+      }
+    }
+
+    var mains = document.querySelectorAll("main,section,article");
+    for (var k = 0; k < mains.length; k++) {
+      var candidate = mains[k];
+      if (!candidate.querySelectorAll || !isVisible(candidate)) continue;
+      if (!hasAnyText(candidate.innerText || candidate.textContent || "", ["auth file", "auth files", "\u8ba4\u8bc1\u6587\u4ef6"])) continue;
+      return candidate;
+    }
+    return null;
+  }
+
+  function findAuthFilesToolbar(pageRoot) {
+    var scope = pageRoot || findAuthFilesPageRoot();
+    if (!scope || !scope.querySelectorAll) return null;
+    var groups = scope.querySelectorAll("div,section,header,nav,form");
+    var bestNode = null;
+    var bestScore = 0;
+    for (var i = 0; i < groups.length; i++) {
+      var group = groups[i];
+      if (!group.querySelectorAll || !isVisible(group)) continue;
+      var buttons = group.querySelectorAll("button,[role='button'],a");
+      if (buttons.length < 2 || buttons.length > 12) continue;
+      var score = 0;
+      for (var j = 0; j < buttons.length; j++) {
+        if (isAuthFilesActionText(getButtonLikeText(buttons[j]))) score += 2;
+      }
+      if (group.querySelector("input,select")) score -= 1;
+      if (group.querySelector("table")) score -= 2;
+      var rect = group.getBoundingClientRect();
+      if (rect.top > Math.max(window.innerHeight * 0.45, 320)) score -= 2;
+      if (score > bestScore) {
+        bestScore = score;
+        bestNode = group;
+      }
+    }
+    return bestScore >= 4 ? bestNode : null;
   }
 
   function rememberManagementAuth(name, value) {
@@ -799,8 +893,78 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     root.appendChild(select);
     root.appendChild(button);
     root.appendChild(status);
-    document.body.appendChild(root);
     return root;
+  }
+
+  function applyMountMode(root, mode) {
+    if (!root) return;
+    root.classList.remove("inline", "topbar-fallback", "floating-fallback");
+    root.classList.add(mode || "floating-fallback");
+  }
+
+  function mountIntoToolbar(root, toolbar) {
+    if (!root || !toolbar) return false;
+    if (root.parentElement !== toolbar) {
+      toolbar.appendChild(root);
+    }
+    applyMountMode(root, "inline");
+    return true;
+  }
+
+  function mountIntoPageRoot(root, pageRoot) {
+    if (!root || !pageRoot) return false;
+    if (root.parentElement !== pageRoot) {
+      pageRoot.insertBefore(root, pageRoot.firstChild);
+    }
+    applyMountMode(root, "topbar-fallback");
+    return true;
+  }
+
+  function mountFloatingFallback(root) {
+    if (!root) return false;
+    if (root.parentElement !== document.body) {
+      document.body.appendChild(root);
+    }
+    applyMountMode(root, "floating-fallback");
+    return true;
+  }
+
+  function ensureMounted() {
+    var root = ensureControl();
+    if (!isAuthFilesRoute()) return root;
+    var pageRoot = findAuthFilesPageRoot();
+    var toolbar = findAuthFilesToolbar(pageRoot);
+    if (mountIntoToolbar(root, toolbar)) return root;
+    if (mountIntoPageRoot(root, pageRoot)) return root;
+    mountFloatingFallback(root);
+    return root;
+  }
+
+  function scheduleRemount() {
+    if (remountTimer) return;
+    remountTimer = window.setTimeout(function () {
+      remountTimer = 0;
+      if (isAuthFilesRoute()) ensureMounted();
+    }, 80);
+  }
+
+  function ensureMountObserver() {
+    if (mountObserver || typeof MutationObserver !== "function" || !document.body) return;
+    mountObserver = new MutationObserver(function () {
+      scheduleRemount();
+    });
+    mountObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function stopMountObserver() {
+    if (mountObserver && mountObserver.disconnect) {
+      mountObserver.disconnect();
+    }
+    mountObserver = null;
+    if (remountTimer) {
+      window.clearTimeout(remountTimer);
+      remountTimer = 0;
+    }
   }
 
   function isAuthFilesRoute() {
@@ -982,8 +1146,14 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
   }
 
   function showOrHideControl() {
-    var root = ensureControl();
-    root.style.display = isAuthFilesRoute() ? "inline-flex" : "none";
+    var onAuthFiles = isAuthFilesRoute();
+    if (onAuthFiles) {
+      ensureMountObserver();
+    } else {
+      stopMountObserver();
+    }
+    var root = ensureMounted();
+    root.style.display = onAuthFiles ? "inline-flex" : "none";
     var select = document.getElementById(SELECT_ID);
     if (select) {
       var mode = getMode();
@@ -991,7 +1161,7 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
         select.value = mode;
       }
     }
-    if (!isAuthFilesRoute()) {
+    if (!onAuthFiles) {
       setCleanerState(false, "", false);
     }
   }

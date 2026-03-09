@@ -45,6 +45,31 @@ func TestInjectAuthFilesWarningFilterPatch_AppendsWhenBodyMissing(t *testing.T) 
 	}
 }
 
+func TestInjectAuthFilesWarningFilterPatch_UsesHeaderMountingInsteadOfBottomFloating(t *testing.T) {
+	input := []byte("<html><body><div>content</div></body></html>")
+	out := injectAuthFilesWarningFilterPatch(input)
+	result := string(out)
+
+	for _, needle := range []string{
+		"findAuthFilesToolbar",
+		"MutationObserver",
+		"floating-fallback",
+		"insertBefore",
+	} {
+		if !strings.Contains(result, needle) {
+			t.Fatalf("expected auth warning filter patch to include %q", needle)
+		}
+	}
+
+	for _, needle := range []string{
+		"position:fixed;right:16px;bottom:16px",
+	} {
+		if strings.Contains(result, needle) {
+			t.Fatalf("expected auth warning filter patch to avoid %q", needle)
+		}
+	}
+}
+
 func TestInjectModelPriceDropdownClipPatch_InsertsBeforeBodyClose(t *testing.T) {
 	input := []byte("<html><body><div>content</div></body></html>")
 	out := injectModelPriceDropdownClipPatch(input)
