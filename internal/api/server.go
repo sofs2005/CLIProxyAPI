@@ -731,7 +731,7 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     if (document.getElementById(STYLE_ID)) return;
     var style = document.createElement("style");
     style.id = STYLE_ID;
-    style.textContent = "#"+ROOT_ID+"{display:none;gap:8px;align-items:center;flex-wrap:wrap;box-sizing:border-box;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;max-width:min(100%,560px);box-shadow:0 8px 24px rgba(0,0,0,.18)}#"+ROOT_ID+".inline{position:relative;z-index:1;margin-left:auto;max-width:min(100%,640px)}#"+ROOT_ID+".topbar-fallback{position:relative;z-index:1;margin:0 0 12px auto;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".floating-fallback{position:fixed;top:72px;right:16px;z-index:2147483647;max-width:min(calc(100vw - 32px),460px)}#"+ROOT_ID+" label{white-space:nowrap;font-weight:600}#"+ROOT_ID+" select{background:#1f1f1f;color:#fff;border:1px solid #666;border-radius:6px;padding:2px 6px;min-width:112px}#"+ROOT_ID+" button{background:#8b1e1e;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:6px;padding:4px 10px;cursor:pointer}#"+ROOT_ID+" button[disabled]{opacity:.55;cursor:not-allowed}#"+STATUS_ID+"{max-width:230px;line-height:1.35;color:rgba(255,255,255,.88)}#"+STATUS_ID+".error{color:#ffb4b4}@media (max-width: 768px){#"+ROOT_ID+"{width:100%;max-width:100%}#"+ROOT_ID+".inline,#"+ROOT_ID+".topbar-fallback{margin-left:0}#"+ROOT_ID+".floating-fallback{left:12px;right:12px;top:auto;bottom:12px;max-width:none}}";
+    style.textContent = "#"+ROOT_ID+"{display:none;gap:8px;align-items:center;flex-wrap:wrap;box-sizing:border-box;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;max-width:min(100%,560px);box-shadow:0 8px 24px rgba(0,0,0,.18)}#"+ROOT_ID+".below-toolbar{position:relative;z-index:1;margin:12px 0 0 auto;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".topbar-fallback{position:relative;z-index:1;margin:0 0 12px auto;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".floating-fallback{position:fixed;top:72px;right:16px;z-index:2147483647;max-width:min(calc(100vw - 32px),460px)}#"+ROOT_ID+" label{white-space:nowrap;font-weight:600}#"+ROOT_ID+" select{background:#1f1f1f;color:#fff;border:1px solid #666;border-radius:6px;padding:2px 6px;min-width:112px}#"+ROOT_ID+" button{background:#8b1e1e;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:6px;padding:4px 10px;cursor:pointer}#"+ROOT_ID+" button[disabled]{opacity:.55;cursor:not-allowed}#"+STATUS_ID+"{max-width:230px;line-height:1.35;color:rgba(255,255,255,.88)}#"+STATUS_ID+".error{color:#ffb4b4}@media (max-width: 768px){#"+ROOT_ID+"{width:100%;max-width:100%}#"+ROOT_ID+".below-toolbar,#"+ROOT_ID+".topbar-fallback{margin-left:0}#"+ROOT_ID+".floating-fallback{left:12px;right:12px;top:auto;bottom:12px;max-width:none}}";
     document.head.appendChild(style);
   }
 
@@ -898,16 +898,22 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
 
   function applyMountMode(root, mode) {
     if (!root) return;
-    root.classList.remove("inline", "topbar-fallback", "floating-fallback");
+    root.classList.remove("below-toolbar", "topbar-fallback", "floating-fallback");
     root.classList.add(mode || "floating-fallback");
   }
 
-  function mountIntoToolbar(root, toolbar) {
+  function mountBelowToolbar(root, toolbar) {
     if (!root || !toolbar) return false;
-    if (root.parentElement !== toolbar) {
-      toolbar.appendChild(root);
+    var parent = toolbar.parentElement;
+    if (!parent) return false;
+    if (root.parentElement !== parent || root.previousElementSibling !== toolbar) {
+      if (toolbar.nextSibling) {
+        parent.insertBefore(root, toolbar.nextSibling);
+      } else {
+        parent.appendChild(root);
+      }
     }
-    applyMountMode(root, "inline");
+    applyMountMode(root, "below-toolbar");
     return true;
   }
 
@@ -934,7 +940,7 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     if (!isAuthFilesRoute()) return root;
     var pageRoot = findAuthFilesPageRoot();
     var toolbar = findAuthFilesToolbar(pageRoot);
-    if (mountIntoToolbar(root, toolbar)) return root;
+    if (mountBelowToolbar(root, toolbar)) return root;
     if (mountIntoPageRoot(root, pageRoot)) return root;
     mountFloatingFallback(root);
     return root;

@@ -52,6 +52,7 @@ func TestInjectAuthFilesWarningFilterPatch_UsesHeaderMountingInsteadOfBottomFloa
 
 	for _, needle := range []string{
 		"findAuthFilesToolbar",
+		"mountBelowToolbar",
 		"MutationObserver",
 		"floating-fallback",
 		"insertBefore",
@@ -63,6 +64,7 @@ func TestInjectAuthFilesWarningFilterPatch_UsesHeaderMountingInsteadOfBottomFloa
 
 	for _, needle := range []string{
 		"position:fixed;right:16px;bottom:16px",
+		"toolbar.appendChild(root)",
 	} {
 		if strings.Contains(result, needle) {
 			t.Fatalf("expected auth warning filter patch to avoid %q", needle)
