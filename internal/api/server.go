@@ -731,7 +731,7 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     if (document.getElementById(STYLE_ID)) return;
     var style = document.createElement("style");
     style.id = STYLE_ID;
-    style.textContent = "#"+ROOT_ID+"{display:none;gap:8px;align-items:center;flex-wrap:wrap;box-sizing:border-box;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;max-width:min(100%,560px);box-shadow:0 8px 24px rgba(0,0,0,.18)}#"+ROOT_ID+".below-toolbar{position:relative;z-index:1;margin:12px 0 0 auto;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".topbar-fallback{position:relative;z-index:1;margin:0 0 12px auto;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".floating-fallback{position:fixed;top:72px;right:16px;z-index:2147483647;max-width:min(calc(100vw - 32px),460px)}#"+ROOT_ID+" label{white-space:nowrap;font-weight:600}#"+ROOT_ID+" select{background:#1f1f1f;color:#fff;border:1px solid #666;border-radius:6px;padding:2px 6px;min-width:112px}#"+ROOT_ID+" button{background:#8b1e1e;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:6px;padding:4px 10px;cursor:pointer}#"+ROOT_ID+" button[disabled]{opacity:.55;cursor:not-allowed}#"+STATUS_ID+"{max-width:230px;line-height:1.35;color:rgba(255,255,255,.88)}#"+STATUS_ID+".error{color:#ffb4b4}@media (max-width: 768px){#"+ROOT_ID+"{width:100%;max-width:100%}#"+ROOT_ID+".below-toolbar,#"+ROOT_ID+".topbar-fallback{margin-left:0}#"+ROOT_ID+".floating-fallback{left:12px;right:12px;top:auto;bottom:12px;max-width:none}}";
+    style.textContent = "#"+ROOT_ID+"{display:none;gap:8px;align-items:center;flex-wrap:wrap;box-sizing:border-box;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;max-width:min(100%,560px);box-shadow:0 8px 24px rgba(0,0,0,.18)}.cpa-auth-heading-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.cpa-auth-heading-row>#"+ROOT_ID+".next-to-heading{margin-left:auto}#"+ROOT_ID+".next-to-heading{position:relative;z-index:1;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".topbar-fallback{position:relative;z-index:1;margin:0 0 12px auto;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".floating-fallback{position:fixed;top:72px;right:16px;z-index:2147483647;max-width:min(calc(100vw - 32px),460px)}#"+ROOT_ID+" label{white-space:nowrap;font-weight:600}#"+ROOT_ID+" select{background:#1f1f1f;color:#fff;border:1px solid #666;border-radius:6px;padding:2px 6px;min-width:112px}#"+ROOT_ID+" button{background:#8b1e1e;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:6px;padding:4px 10px;cursor:pointer}#"+ROOT_ID+" button[disabled]{opacity:.55;cursor:not-allowed}#"+STATUS_ID+"{max-width:230px;line-height:1.35;color:rgba(255,255,255,.88)}#"+STATUS_ID+".error{color:#ffb4b4}@media (max-width: 768px){#"+ROOT_ID+"{width:100%;max-width:100%}.cpa-auth-heading-row>#"+ROOT_ID+".next-to-heading,#"+ROOT_ID+".topbar-fallback{margin-left:0}#"+ROOT_ID+".floating-fallback{left:12px;right:12px;top:auto;bottom:12px;max-width:none}}";
     document.head.appendChild(style);
   }
 
@@ -765,6 +765,7 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
   function findAuthFilesHeading() {
     var headings = document.querySelectorAll("h1,h2,h3,[role='heading']");
     for (var i = 0; i < headings.length; i++) {
+      if (!isVisible(headings[i])) continue;
       var headingText = normalizeText(headings[i].innerText || headings[i].textContent || "");
       if (headingText.indexOf("auth file") !== -1 || headingText.indexOf("auth files") !== -1 || headingText.indexOf("\u8ba4\u8bc1\u6587\u4ef6") !== -1) {
         return headings[i];
@@ -800,31 +801,30 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     return null;
   }
 
-  function findAuthFilesToolbar(pageRoot) {
-    var scope = pageRoot || findAuthFilesPageRoot();
-    if (!scope || !scope.querySelectorAll) return null;
-    var groups = scope.querySelectorAll("div,section,header,nav,form");
-    var bestNode = null;
-    var bestScore = 0;
-    for (var i = 0; i < groups.length; i++) {
-      var group = groups[i];
-      if (!group.querySelectorAll || !isVisible(group)) continue;
-      var buttons = group.querySelectorAll("button,[role='button'],a");
-      if (buttons.length < 2 || buttons.length > 12) continue;
-      var score = 0;
-      for (var j = 0; j < buttons.length; j++) {
-        if (isAuthFilesActionText(getButtonLikeText(buttons[j]))) score += 2;
+  function findHeadingRow(heading) {
+    if (!heading) return null;
+    var current = heading.parentElement;
+    for (var i = 0; i < 4 && current; i++) {
+      if (!isVisible(current)) {
+        current = current.parentElement;
+        continue;
       }
-      if (group.querySelector("input,select")) score -= 1;
-      if (group.querySelector("table")) score -= 2;
-      var rect = group.getBoundingClientRect();
-      if (rect.top > Math.max(window.innerHeight * 0.45, 320)) score -= 2;
-      if (score > bestScore) {
-        bestScore = score;
-        bestNode = group;
+      if (current.querySelector("table,form")) {
+        current = current.parentElement;
+        continue;
       }
+      if (current.childElementCount > 4) {
+        current = current.parentElement;
+        continue;
+      }
+      var buttons = current.querySelectorAll("button,[role='button'],a");
+      if (buttons.length > 0) {
+        current = current.parentElement;
+        continue;
+      }
+      return current;
     }
-    return bestScore >= 4 ? bestNode : null;
+    return null;
   }
 
   function rememberManagementAuth(name, value) {
@@ -898,22 +898,22 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
 
   function applyMountMode(root, mode) {
     if (!root) return;
-    root.classList.remove("below-toolbar", "topbar-fallback", "floating-fallback");
+    root.classList.remove("next-to-heading", "topbar-fallback", "floating-fallback");
     root.classList.add(mode || "floating-fallback");
   }
 
-  function mountBelowToolbar(root, toolbar) {
-    if (!root || !toolbar) return false;
-    var parent = toolbar.parentElement;
-    if (!parent) return false;
-    if (root.parentElement !== parent || root.previousElementSibling !== toolbar) {
-      if (toolbar.nextSibling) {
-        parent.insertBefore(root, toolbar.nextSibling);
-      } else {
-        parent.appendChild(root);
-      }
+  function mountNextToHeading(root, heading) {
+    if (!root || !heading) return false;
+    var row = findHeadingRow(heading);
+    if (!row) return false;
+    if (row.classList) {
+      row.classList.add("cpa-auth-heading-row");
     }
-    applyMountMode(root, "below-toolbar");
+    if (!row.contains(heading)) return false;
+    if (root.parentElement !== row || row.lastElementChild !== root) {
+      row.appendChild(root);
+    }
+    applyMountMode(root, "next-to-heading");
     return true;
   }
 
@@ -939,8 +939,8 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     var root = ensureControl();
     if (!isAuthFilesRoute()) return root;
     var pageRoot = findAuthFilesPageRoot();
-    var toolbar = findAuthFilesToolbar(pageRoot);
-    if (mountBelowToolbar(root, toolbar)) return root;
+    var heading = findAuthFilesHeading();
+    if (mountNextToHeading(root, heading)) return root;
     if (mountIntoPageRoot(root, pageRoot)) return root;
     mountFloatingFallback(root);
     return root;
