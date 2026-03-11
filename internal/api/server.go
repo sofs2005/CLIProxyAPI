@@ -713,14 +713,10 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
 
   var STYLE_ID = "cpa-auth-warning-filter-style";
   var ROOT_ID = "cpa-auth-warning-filter-root";
-  var SELECT_ID = "cpa-auth-warning-filter-select";
   var BUTTON_ID = "cpa-auth-clean-401-button";
   var STATUS_ID = "cpa-auth-clean-401-status";
-  var STORAGE_KEY = "cpa_auth_warning_filter_mode";
   var CLEAN_ENDPOINT = "/v0/management/auth-files/clean-codex-401";
   var isZh = (document.documentElement && (document.documentElement.lang || "").toLowerCase().indexOf("zh") === 0);
-  var ZH_HEALTH = "\u5065\u5eb7\u72b6\u6001";
-  var ZH_WARNING = "\u8b66\u544a";
   var cachedAuthHeaderName = "";
   var cachedAuthHeaderValue = "";
   var cleanerBusy = false;
@@ -731,7 +727,7 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     if (document.getElementById(STYLE_ID)) return;
     var style = document.createElement("style");
     style.id = STYLE_ID;
-    style.textContent = "#"+ROOT_ID+"{display:none;gap:8px;align-items:center;flex-wrap:wrap;box-sizing:border-box;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;max-width:min(100%,560px);box-shadow:0 8px 24px rgba(0,0,0,.18)}#"+ROOT_ID+".before-header-actions{position:relative;z-index:1;margin-left:auto;margin-right:12px;width:fit-content;max-width:min(100%,560px)}#"+ROOT_ID+".topbar-fallback{position:relative;z-index:1;margin:0 0 12px auto;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".floating-fallback{position:fixed;top:72px;right:16px;z-index:2147483647;max-width:min(calc(100vw - 32px),460px)}#"+ROOT_ID+" label{white-space:nowrap;font-weight:600}#"+ROOT_ID+" select{background:#1f1f1f;color:#fff;border:1px solid #666;border-radius:6px;padding:2px 6px;min-width:112px}#"+ROOT_ID+" button{background:#8b1e1e;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:6px;padding:4px 10px;cursor:pointer}#"+ROOT_ID+" button[disabled]{opacity:.55;cursor:not-allowed}#"+STATUS_ID+"{max-width:230px;line-height:1.35;color:rgba(255,255,255,.88)}#"+STATUS_ID+".error{color:#ffb4b4}@media (max-width: 768px){#"+ROOT_ID+"{width:100%;max-width:100%}#"+ROOT_ID+".before-header-actions,#"+ROOT_ID+".topbar-fallback{margin-left:0;margin-right:0}#"+ROOT_ID+".floating-fallback{left:12px;right:12px;top:auto;bottom:12px;max-width:none}}";
+    style.textContent = "#"+ROOT_ID+"{display:none;gap:8px;align-items:center;flex-wrap:wrap;box-sizing:border-box;background:rgba(18,18,18,.86);color:#fff;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.2);font-size:12px;font-family:Arial,sans-serif;max-width:min(100%,560px);box-shadow:0 8px 24px rgba(0,0,0,.18)}#"+ROOT_ID+".before-header-actions{position:relative;z-index:1;margin-left:auto;margin-right:12px;width:fit-content;max-width:min(100%,560px)}#"+ROOT_ID+".topbar-fallback{position:relative;z-index:1;margin:0 0 12px auto;width:fit-content;max-width:min(100%,640px)}#"+ROOT_ID+".floating-fallback{position:fixed;top:72px;right:16px;z-index:2147483647;max-width:min(calc(100vw - 32px),460px)}#"+ROOT_ID+" button{background:#8b1e1e;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:6px;padding:4px 10px;cursor:pointer}#"+ROOT_ID+" button[disabled]{opacity:.55;cursor:not-allowed}#"+STATUS_ID+"{max-width:230px;line-height:1.35;color:rgba(255,255,255,.88)}#"+STATUS_ID+".error{color:#ffb4b4}@media (max-width: 768px){#"+ROOT_ID+"{width:100%;max-width:100%}#"+ROOT_ID+".before-header-actions,#"+ROOT_ID+".topbar-fallback{margin-left:0;margin-right:0}#"+ROOT_ID+".floating-fallback{left:12px;right:12px;top:auto;bottom:12px;max-width:none}}";
     document.head.appendChild(style);
   }
 
@@ -867,19 +863,6 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     root = document.createElement("div");
     root.id = ROOT_ID;
 
-    var label = document.createElement("label");
-    label.setAttribute("for", SELECT_ID);
-    label.textContent = isZh ? (ZH_HEALTH + "\u8fc7\u6ee4") : "Health Filter";
-
-    var select = document.createElement("select");
-    select.id = SELECT_ID;
-    select.innerHTML = '<option value="all">'+(isZh ? "\u5168\u90e8" : "All")+'</option><option value="warning">'+(isZh ? ZH_WARNING : "Warning")+'</option>';
-    select.value = getMode();
-    select.addEventListener("change", function () {
-      setMode(select.value || "all");
-      triggerRefresh();
-    });
-
     var button = document.createElement("button");
     button.type = "button";
     button.id = BUTTON_ID;
@@ -889,8 +872,6 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     var status = document.createElement("span");
     status.id = STATUS_ID;
 
-    root.appendChild(label);
-    root.appendChild(select);
     root.appendChild(button);
     root.appendChild(status);
     return root;
@@ -973,54 +954,6 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     return (window.location.hash || "").indexOf("/auth-files") !== -1;
   }
 
-  function getMode() {
-    try {
-      var mode = (sessionStorage.getItem(STORAGE_KEY) || "all").toLowerCase();
-      return mode === "warning" ? "warning" : "all";
-    } catch (e) {
-      return "all";
-    }
-  }
-
-  function setMode(mode) {
-    try {
-      sessionStorage.setItem(STORAGE_KEY, mode === "warning" ? "warning" : "all");
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  function normalizeURL(rawUrl) {
-    try {
-      return new URL(rawUrl, window.location.origin);
-    } catch (e) {
-      return null;
-    }
-  }
-
-  function shouldRewrite(urlObj) {
-    if (!urlObj) return false;
-    var p = (urlObj.pathname || "").toLowerCase();
-    return p.indexOf("/v0/management/auth-files") !== -1 && p.indexOf("/models") === -1;
-  }
-
-  function rewriteAuthFilesURL(rawUrl) {
-    var urlObj = normalizeURL(rawUrl);
-    if (!shouldRewrite(urlObj)) {
-      return rawUrl;
-    }
-    var mode = getMode();
-    if (mode === "warning") {
-      urlObj.searchParams.set("health_status", "warning");
-    } else {
-      urlObj.searchParams.delete("health_status");
-    }
-    if (/^https?:\/\//i.test(rawUrl || "")) {
-      return urlObj.toString();
-    }
-    return urlObj.pathname + (urlObj.search || "") + (urlObj.hash || "");
-  }
-
   function patchFetch() {
     if (typeof window.fetch !== "function") return;
     var originalFetch = window.fetch.bind(window);
@@ -1034,14 +967,6 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
         }
         if ((requestURL || "").indexOf("/v0/management/") !== -1) {
           captureHeaders((init && init.headers) || (input && input.headers));
-        }
-        if (typeof input === "string") {
-          input = rewriteAuthFilesURL(input);
-        } else if (input && input.url) {
-          var rewritten = rewriteAuthFilesURL(input.url);
-          if (rewritten !== input.url) {
-            input = new Request(rewritten, input);
-          }
         }
       } catch (e) {
         // ignore patch failure
@@ -1058,9 +983,6 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     proto.open = function (method, url) {
       try {
         this.__cpaRequestURL = typeof url === "string" ? url : "";
-        if (typeof url === "string") {
-          url = rewriteAuthFilesURL(url);
-        }
       } catch (e) {
         // ignore patch failure
       }
@@ -1156,13 +1078,6 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     }
     var root = ensureMounted();
     root.style.display = onAuthFiles ? "inline-flex" : "none";
-    var select = document.getElementById(SELECT_ID);
-    if (select) {
-      var mode = getMode();
-      if (select.value !== mode) {
-        select.value = mode;
-      }
-    }
     if (!onAuthFiles) {
       setCleanerState(false, "", false);
     }

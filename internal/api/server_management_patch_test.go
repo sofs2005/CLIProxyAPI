@@ -57,6 +57,8 @@ func TestInjectAuthFilesWarningFilterPatch_UsesHeaderMountingInsteadOfBottomFloa
 		"MutationObserver",
 		"floating-fallback",
 		"insertBefore",
+		"cpa-auth-clean-401-button",
+		"/v0/management/auth-files/clean-codex-401",
 	} {
 		if !strings.Contains(result, needle) {
 			t.Fatalf("expected auth warning filter patch to include %q", needle)
@@ -66,6 +68,13 @@ func TestInjectAuthFilesWarningFilterPatch_UsesHeaderMountingInsteadOfBottomFloa
 	for _, needle := range []string{
 		"position:fixed;right:16px;bottom:16px",
 		"mountNextToHeading",
+		"Health Filter",
+		"cpa-auth-warning-filter-select",
+		"cpa_auth_warning_filter_mode",
+		"health_status",
+		"rewriteAuthFilesURL",
+		"getMode",
+		"setMode",
 	} {
 		if strings.Contains(result, needle) {
 			t.Fatalf("expected auth warning filter patch to avoid %q", needle)
