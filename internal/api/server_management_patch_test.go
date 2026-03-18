@@ -82,6 +82,25 @@ func TestInjectAuthFilesWarningFilterPatch_UsesHeaderMountingInsteadOfBottomFloa
 	}
 }
 
+func TestInjectAuthFilesWarningFilterPatch_SanitizesHTMLErrorResponses(t *testing.T) {
+	input := []byte("<html><body><div>content</div></body></html>")
+	out := injectAuthFilesWarningFilterPatch(input)
+	result := string(out)
+
+	for _, needle := range []string{
+		"looksLikeHTMLDocument",
+		"buildCleanerErrorMessage",
+		"text/html",
+		"Cleanup request timed out. Please try again.",
+		"Cleanup request returned an HTML error page. Please try again.",
+		"\\u6e05\\u7406\\u8bf7\\u6c42\\u8d85\\u65f6",
+	} {
+		if !strings.Contains(result, needle) {
+			t.Fatalf("expected auth warning filter patch to include %q", needle)
+		}
+	}
+}
+
 func TestInjectModelPriceDropdownClipPatch_InsertsBeforeBodyClose(t *testing.T) {
 	input := []byte("<html><body><div>content</div></body></html>")
 	out := injectModelPriceDropdownClipPatch(input)

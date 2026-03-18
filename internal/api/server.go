@@ -1028,14 +1028,79 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
     return "Scanned " + scanned + ", matched " + matched + ", deleted " + deleted + ", failed " + failed;
   }
 
-  function readResponseJSON(response) {
-    return response.text().then(function (text) {
-      if (!text) return {};
-      try {
-        return JSON.parse(text);
-      } catch (e) {
-        return { error: text };
+  function looksLikeHTMLDocument(text) {
+    var value = ((text || "") + "").trim().toLowerCase();
+    if (!value) return false;
+    return value.indexOf("<!doctype html") === 0 ||
+      value.indexOf("<html") === 0 ||
+      value.indexOf("<head") === 0 ||
+      value.indexOf("<body") === 0 ||
+      value.indexOf("<title") !== -1;
+  }
+
+  function buildCleanerErrorMessage(response, payload) {
+    var contentType = "";
+    try {
+      contentType = ((response && response.headers && response.headers.get && response.headers.get("content-type")) || "") + "";
+    } catch (e) {
+      // ignore
+    }
+    contentType = contentType.toLowerCase();
+
+    var rawText = "";
+    if (payload && typeof payload === "object") {
+      if (typeof payload.error === "string") {
+        rawText = payload.error;
+      } else if (typeof payload.message === "string") {
+        rawText = payload.message;
+      } else if (typeof payload.rawText === "string") {
+        rawText = payload.rawText;
       }
+    }
+    rawText = ((rawText || "") + "").trim();
+
+    var timeoutLike = !!(response && Number(response.status || 0) === 524);
+    if (!timeoutLike) {
+      timeoutLike = hasAnyText(rawText, ["timeout occurred", "timed out", "error code 524", "cloudflare 524"]);
+    }
+    if (timeoutLike) {
+      return isZh ? "\u6e05\u7406\u8bf7\u6c42\u8d85\u65f6\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002" : "Cleanup request timed out. Please try again.";
+    }
+
+    if (contentType.indexOf("text/html") !== -1 || looksLikeHTMLDocument(rawText)) {
+      return isZh ? "\u6e05\u7406\u8bf7\u6c42\u8fd4\u56de\u4e86 HTML \u9519\u8bef\u9875\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002" : "Cleanup request returned an HTML error page. Please try again.";
+    }
+
+    if (!rawText) {
+      return isZh ? "\u6e05\u7406\u5931\u8d25" : "Cleanup failed";
+    }
+
+    rawText = rawText.replace(/\s+/g, " ").trim();
+    if (rawText.length > 180) {
+      rawText = rawText.slice(0, 177) + "...";
+    }
+    return rawText;
+  }
+
+  function readResponseJSON(response) {
+    var contentType = "";
+    try {
+      contentType = ((response && response.headers && response.headers.get && response.headers.get("content-type")) || "") + "";
+    } catch (e) {
+      // ignore
+    }
+    return response.text().then(function (text) {
+      if (!text) return { contentType: contentType };
+      try {
+        var parsed = JSON.parse(text);
+        if (parsed && typeof parsed === "object") {
+          if (!parsed.contentType) parsed.contentType = contentType;
+          return parsed;
+        }
+      } catch (e) {
+        // ignore parse errors and fall back to plain text payload
+      }
+      return { error: text, rawText: text, contentType: contentType };
     });
   }
 
@@ -1054,7 +1119,7 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
       .then(function (response) {
         return readResponseJSON(response).then(function (payload) {
           if (!response.ok) {
-            var message = (payload && (payload.error || payload.message)) || (isZh ? "\u6e05\u7406\u5931\u8d25" : "Cleanup failed");
+            var message = buildCleanerErrorMessage(response, payload);
             throw new Error(message);
           }
           return payload;
@@ -1065,7 +1130,7 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
         setTimeout(triggerRefresh, 120);
       })
       .catch(function (error) {
-        setCleanerState(false, (error && error.message) || (isZh ? "\u6e05\u7406\u5931\u8d25" : "Cleanup failed"), true);
+        setCleanerState(false, buildCleanerErrorMessage(null, { error: (error && error.message) || "" }), true);
       });
   }
 
