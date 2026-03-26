@@ -1299,6 +1299,89 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+// SyncCodexQuotaMetadata persists Codex quota payload received from the management panel
+// so backend selector logic can honor reserve thresholds using the same refreshed data.
+func (h *Handler) SyncCodexQuotaMetadata(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+
+	var req struct {
+		Name      string         `json:"name"`
+		AuthIndex string         `json:"auth_index"`
+		AccountID string         `json:"account_id"`
+		Payload   map[string]any `json:"payload"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	if len(req.Payload) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "payload is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	accountID := strings.TrimSpace(req.AccountID)
+	name := strings.TrimSpace(req.Name)
+	authIndex := strings.TrimSpace(req.AuthIndex)
+
+	var targetAuth *coreauth.Auth
+	if name != "" {
+		if auth, ok := h.authManager.GetByID(name); ok {
+			targetAuth = auth
+		} else {
+			for _, auth := range h.authManager.List() {
+				if auth != nil && strings.TrimSpace(auth.FileName) == name {
+					targetAuth = auth
+					break
+				}
+			}
+		}
+	}
+	if targetAuth == nil {
+		for _, auth := range h.authManager.List() {
+			if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+				continue
+			}
+			auth.EnsureIndex()
+			if authIndex != "" && strings.EqualFold(strings.TrimSpace(auth.Index), authIndex) {
+				targetAuth = auth
+				break
+			}
+			if accountID != "" && strings.EqualFold(codexAccountIDForAuth(auth), accountID) {
+				targetAuth = auth
+				break
+			}
+		}
+	}
+	if targetAuth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "codex auth not found"})
+		return
+	}
+
+	if targetAuth.Metadata == nil {
+		targetAuth.Metadata = make(map[string]any)
+	}
+	now := time.Now().UTC()
+	targetAuth.Metadata["codex_quota"] = req.Payload
+	targetAuth.Metadata["last_refresh"] = now.Format(time.RFC3339)
+	targetAuth.LastRefreshedAt = now
+	targetAuth.UpdatedAt = now
+
+	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "ok",
+		"auth_id":    targetAuth.ID,
+		"auth_index": targetAuth.Index,
+	})
+}
+
 func (h *Handler) disableAuth(ctx context.Context, id string) {
 	if h == nil || h.authManager == nil {
 		return

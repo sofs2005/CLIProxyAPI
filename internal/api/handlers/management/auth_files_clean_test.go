@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -338,5 +339,63 @@ func TestCleanCodex401AuthFiles_HandlesWatcherStyleAuthWithoutFileName(t *testin
 	}
 	if _, err := os.Stat(badFile); !os.IsNotExist(err) {
 		t.Fatalf("expected watcher-style file removed, stat err: %v", err)
+	}
+}
+
+func TestSyncCodexQuotaMetadata_UpdatesMatchingAuthByAccountID(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "codex-good.json",
+		FileName: "codex-good.json",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"type":       "codex",
+			"account_id": "acct-good",
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	h.tokenStore = store
+
+	body := `{"account_id":"acct-good","payload":{"plan_type":"free","rate_limit":{"primary_window":{"used_percent":91,"reset_at":1743000000}},"code_review_rate_limit":{"primary_window":{"used_percent":30,"reset_at":1743003600}}}}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/auth-files/codex-quota-sync", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.SyncCodexQuotaMetadata(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	updated, ok := manager.GetByID("codex-good.json")
+	if !ok {
+		t.Fatal("expected updated auth to exist")
+	}
+	quota, ok := updated.Metadata["codex_quota"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected codex_quota metadata, got %#v", updated.Metadata["codex_quota"])
+	}
+	if got, _ := quota["plan_type"].(string); got != "free" {
+		t.Fatalf("codex_quota.plan_type = %q, want %q", got, "free")
+	}
+	rateLimit, ok := quota["rate_limit"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected rate_limit map, got %#v", quota["rate_limit"])
+	}
+	primary, ok := rateLimit["primary_window"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected primary_window map, got %#v", rateLimit["primary_window"])
+	}
+	if got := primary["used_percent"]; got != float64(91) {
+		t.Fatalf("primary_window.used_percent = %#v, want 91", got)
 	}
 }
