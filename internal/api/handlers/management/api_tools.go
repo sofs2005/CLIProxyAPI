@@ -21,6 +21,8 @@ import (
 
 const defaultAPICallTimeout = 60 * time.Second
 
+const codexUsagePath = "/backend-api/wham/usage"
+
 const (
 	geminiOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
 	geminiOAuthClientSecret = "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"
@@ -207,12 +209,64 @@ func (h *Handler) APICall(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
 		return
 	}
+	h.persistCodexQuotaFromAPICall(c.Request.Context(), auth, urlStr, reqHeaders, resp.StatusCode, respBody)
 
 	c.JSON(http.StatusOK, apiCallResponse{
 		StatusCode: resp.StatusCode,
 		Header:     resp.Header,
 		Body:       string(respBody),
 	})
+}
+
+func (h *Handler) persistCodexQuotaFromAPICall(ctx context.Context, auth *coreauth.Auth, urlStr string, reqHeaders map[string]string, statusCode int, respBody []byte) {
+	if h == nil || h.authManager == nil || auth == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return
+	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return
+	}
+	if !strings.Contains(strings.ToLower(strings.TrimSpace(urlStr)), codexUsagePath) {
+		return
+	}
+	if len(respBody) == 0 {
+		return
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(respBody, &payload); err != nil || len(payload) == 0 {
+		return
+	}
+
+	accountID := strings.TrimSpace(reqHeaders["Chatgpt-Account-Id"])
+	if accountID == "" {
+		for key, value := range reqHeaders {
+			if strings.EqualFold(strings.TrimSpace(key), "Chatgpt-Account-Id") {
+				accountID = strings.TrimSpace(value)
+				break
+			}
+		}
+	}
+	if accountID != "" {
+		storedAccountID := strings.TrimSpace(codexAccountIDForAuth(auth))
+		if storedAccountID != "" && !strings.EqualFold(storedAccountID, accountID) {
+			return
+		}
+	}
+
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	now := time.Now().UTC()
+	auth.Metadata["codex_quota"] = payload
+	auth.Metadata["last_refresh"] = now.Format(time.RFC3339)
+	auth.LastRefreshedAt = now
+	auth.UpdatedAt = now
+	if _, err := h.authManager.Update(ctx, auth); err != nil {
+		log.WithError(err).Warn("failed to persist codex quota metadata from management api-call")
+	}
 }
 
 func firstNonEmptyString(values ...*string) string {

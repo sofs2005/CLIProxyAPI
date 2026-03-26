@@ -24,13 +24,21 @@ func TestInjectAuthFilesWarningFilterPatch_ContainsCodexQuotaSyncHooks(t *testin
 	result := string(out)
 
 	for _, needle := range []string{
-		"backend-api/wham/usage",
-		"/v0/management/auth-files/codex-quota-sync",
-		"Chatgpt-Account-Id",
-		"codexQuotaSync",
+		"cpa-auth-clean-401-button",
+		"/v0/management/auth-files/clean-codex-401",
+		"captureHeaders",
 	} {
 		if !strings.Contains(result, needle) {
 			t.Fatalf("expected auth warning filter patch to include %q", needle)
+		}
+	}
+	for _, needle := range []string{
+		"/v0/management/auth-files/codex-quota-sync",
+		"backend-api/wham/usage",
+		"codexQuotaSync",
+	} {
+		if strings.Contains(result, needle) {
+			t.Fatalf("expected auth warning filter patch to no longer include %q", needle)
 		}
 	}
 }

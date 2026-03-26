@@ -627,7 +627,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
 		mgmt.POST("/auth-files/clean-codex-401", s.mgmt.CleanCodex401AuthFiles)
-		mgmt.POST("/auth-files/codex-quota-sync", s.mgmt.SyncCodexQuotaMetadata)
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
 		mgmt.PATCH("/auth-files/fields", s.mgmt.PatchAuthFileFields)
@@ -717,13 +716,10 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
   var BUTTON_ID = "cpa-auth-clean-401-button";
   var STATUS_ID = "cpa-auth-clean-401-status";
 	var CLEAN_ENDPOINT = "/v0/management/auth-files/clean-codex-401";
-	var QUOTA_SYNC_ENDPOINT = "/v0/management/auth-files/codex-quota-sync";
-	var CODEX_USAGE_PATH = "backend-api/wham/usage";
 	var isZh = (document.documentElement && (document.documentElement.lang || "").toLowerCase().indexOf("zh") === 0);
 	var cachedAuthHeaderName = "";
 	var cachedAuthHeaderValue = "";
 	var cleanerBusy = false;
-	var codexQuotaSync = true;
 	var mountObserver = null;
 	var remountTimer = 0;
 
@@ -962,30 +958,20 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
 	  if (typeof window.fetch !== "function") return;
 	  var originalFetch = window.fetch.bind(window);
 	  window.fetch = function (input, init) {
-	    var requestHeaders = (init && init.headers) || (input && input.headers);
-	    var requestURL = "";
 	    try {
+	      var requestURL = "";
 	      if (typeof input === "string") {
 	        requestURL = input;
 	      } else if (input && input.url) {
 	        requestURL = input.url;
 	      }
 	      if ((requestURL || "").indexOf("/v0/management/") !== -1) {
-	        captureHeaders(requestHeaders);
+	        captureHeaders((init && init.headers) || (input && input.headers));
 	      }
 	    } catch (e) {
 	      // ignore patch failure
 	    }
-	    return originalFetch(input, init).then(function (response) {
-	      trySyncCodexQuotaResponse(requestURL, requestHeaders, response, function () {
-	        try {
-	          return response.clone().text();
-	        } catch (e) {
-	          return Promise.resolve("");
-	        }
-	      });
-	      return response;
-	    });
+	    return originalFetch(input, init);
 	  };
 	}
 
@@ -994,11 +980,9 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
 	  var proto = window.XMLHttpRequest.prototype;
 	  var originalOpen = proto.open;
 	  var originalSetRequestHeader = proto.setRequestHeader;
-	  var originalSend = proto.send;
 	  proto.open = function (method, url) {
 	    try {
 	      this.__cpaRequestURL = typeof url === "string" ? url : "";
-	      this.__cpaHeaders = {};
 	    } catch (e) {
 	      // ignore patch failure
 	    }
@@ -1006,10 +990,6 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
 	  };
 	  proto.setRequestHeader = function (name, value) {
 	    try {
-	      if (this) {
-	        if (!this.__cpaHeaders) this.__cpaHeaders = {};
-	        this.__cpaHeaders[name] = value;
-	      }
 	      if (((this && this.__cpaRequestURL) || "").indexOf("/v0/management/") !== -1) {
 	        rememberManagementAuth(name, value);
 	      }
@@ -1018,92 +998,6 @@ func injectAuthFilesWarningFilterPatch(html []byte) []byte {
 	    }
 	    return originalSetRequestHeader.apply(this, arguments);
 	  };
-	  proto.send = function () {
-	    try {
-	      if (this && this.addEventListener && !this.__cpaQuotaSyncHooked) {
-	        this.__cpaQuotaSyncHooked = true;
-	        this.addEventListener("loadend", function () {
-	          trySyncCodexQuotaXHR(this);
-	        });
-	      }
-	    } catch (e) {
-	      // ignore patch failure
-	    }
-	    return originalSend.apply(this, arguments);
-	  };
-	}
-
-	function extractHeaderValue(headers, targetName) {
-	  if (!headers || !targetName) return "";
-	  var wanted = (targetName + "").toLowerCase();
-	  try {
-	    if (typeof Headers !== "undefined" && headers instanceof Headers) {
-	      return (headers.get(targetName) || headers.get(wanted) || "") + "";
-	    }
-	    if (Array.isArray(headers)) {
-	      for (var i = 0; i < headers.length; i++) {
-	        var pair = headers[i] || [];
-	        if (((pair[0] || "") + "").toLowerCase() === wanted) return (pair[1] || "") + "";
-	      }
-	      return "";
-	    }
-	    var keys = Object.keys(headers);
-	    for (var j = 0; j < keys.length; j++) {
-	      if ((keys[j] || "").toLowerCase() === wanted) return (headers[keys[j]] || "") + "";
-	    }
-	  } catch (e) {
-	    // ignore
-	  }
-	  return "";
-	}
-
-	function isCodexUsageURL(url) {
-	  return ((url || "") + "").toLowerCase().indexOf(CODEX_USAGE_PATH) !== -1;
-	}
-
-	function parsePossibleJSON(text) {
-	  if (!text) return null;
-	  try {
-	    var parsed = JSON.parse(text);
-	    return parsed && typeof parsed === "object" ? parsed : null;
-	  } catch (e) {
-	    return null;
-	  }
-	}
-
-	function syncCodexQuota(accountId, payload) {
-	  if (!codexQuotaSync || !cachedAuthHeaderName || !cachedAuthHeaderValue) return;
-	  accountId = ((accountId || "") + "").trim();
-	  if (!accountId || !payload || typeof payload !== "object") return;
-	  var headers = { "Content-Type": "application/json" };
-	  headers[cachedAuthHeaderName] = cachedAuthHeaderValue;
-	  window.fetch(QUOTA_SYNC_ENDPOINT, {
-	    method: "POST",
-	    headers: headers,
-	    body: JSON.stringify({ account_id: accountId, payload: payload })
-	  }).catch(function () {
-	    // ignore background sync failures
-	  });
-	}
-
-	function trySyncCodexQuotaResponse(requestURL, requestHeaders, response, bodyReader) {
-	  if (!isCodexUsageURL(requestURL) || !response || !response.ok || typeof bodyReader !== "function") return;
-	  var accountId = extractHeaderValue(requestHeaders, "Chatgpt-Account-Id");
-	  if (!accountId) return;
-	  bodyReader().then(function (text) {
-	    var payload = parsePossibleJSON(text);
-	    if (payload) syncCodexQuota(accountId, payload);
-	  }).catch(function () {
-	    // ignore response parsing failures
-	  });
-	}
-
-	function trySyncCodexQuotaXHR(xhr) {
-	  if (!xhr || !isCodexUsageURL(xhr.__cpaRequestURL) || Number(xhr.status || 0) < 200 || Number(xhr.status || 0) >= 300) return;
-	  var accountId = extractHeaderValue(xhr.__cpaHeaders, "Chatgpt-Account-Id");
-	  if (!accountId) return;
-	  var payload = parsePossibleJSON(xhr.responseText || "");
-	  if (payload) syncCodexQuota(accountId, payload);
 	}
 
   function setCleanerState(busy, message, isError) {

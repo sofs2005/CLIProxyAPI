@@ -2,9 +2,14 @@ package management
 
 import (
 	"context"
+	"encoding/json"
+	"net/http/httptest"
+	"strings"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
@@ -109,5 +114,87 @@ func TestAuthByIndexDistinguishesSharedAPIKeysAcrossProviders(t *testing.T) {
 	}
 	if gotCompat.ID != compatAuth.ID {
 		t.Fatalf("authByIndex(compat) returned %q, want %q", gotCompat.ID, compatAuth.ID)
+	}
+}
+
+func TestAPICall_PersistsCodexQuotaFromWhamUsageResponse(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/wham/usage" {
+			t.Fatalf("unexpected upstream path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"plan_type":"free","rate_limit":{"primary_window":{"used_percent":92,"reset_at":"2026-03-27T12:00:00Z"}}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "codex-good.json",
+		FileName: "codex-good.json",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"type":       "codex",
+			"account_id": "acct-good",
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	authIndex := auth.EnsureIndex()
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+	h.tokenStore = store
+
+	body := `{"auth_index":"` + authIndex + `","method":"GET","url":"` + upstream.URL + `/backend-api/wham/usage","header":{"Chatgpt-Account-Id":"acct-good"}}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.APICall(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	updated, ok := manager.GetByID("codex-good.json")
+	if !ok {
+		t.Fatal("expected updated auth to exist")
+	}
+	quota, ok := updated.Metadata["codex_quota"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected codex_quota metadata, got %#v", updated.Metadata["codex_quota"])
+	}
+	if got, _ := quota["plan_type"].(string); got != "free" {
+		t.Fatalf("codex_quota.plan_type = %q, want %q", got, "free")
+	}
+	rateLimit, ok := quota["rate_limit"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected rate_limit map, got %#v", quota["rate_limit"])
+	}
+	primary, ok := rateLimit["primary_window"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected primary_window map, got %#v", rateLimit["primary_window"])
+	}
+	if got := primary["used_percent"]; got != float64(92) {
+		t.Fatalf("primary_window.used_percent = %#v, want 92", got)
+	}
+	if updated.LastRefreshedAt.IsZero() || time.Since(updated.LastRefreshedAt) > time.Minute {
+		t.Fatalf("expected LastRefreshedAt to be updated recently, got %v", updated.LastRefreshedAt)
+	}
+
+	var response apiCallResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal api call response: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("upstream status_code = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+	if !strings.Contains(response.Body, `"used_percent":92`) {
+		t.Fatalf("api response body did not proxy upstream payload: %s", response.Body)
 	}
 }
