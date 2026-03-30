@@ -17,7 +17,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
 
-const codexQuotaReserveUsedPercent = 90.0
+const codexQuotaReserveUsedPercent = 80.0
 
 // RoundRobinSelector provides a simple provider scoped round-robin selection strategy.
 type RoundRobinSelector struct {

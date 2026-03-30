@@ -9,24 +9,24 @@ func TestIsAuthBlockedForModel_CodexQuotaReserveBlocksNearLimit(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now().UTC()
-	auth := &Auth{
-		ID:       "codex-1",
-		Provider: "codex",
-		Metadata: map[string]any{
-			"codex_quota": map[string]any{
-				"rate_limit": map[string]any{
-					"primary_window": map[string]any{
-						"used_percent": 90,
-						"reset_at":     now.Add(2 * time.Hour).Format(time.RFC3339),
+		auth := &Auth{
+			ID:       "codex-1",
+			Provider: "codex",
+			Metadata: map[string]any{
+				"codex_quota": map[string]any{
+					"rate_limit": map[string]any{
+						"primary_window": map[string]any{
+							"used_percent": 80,
+							"reset_at":     now.Add(2 * time.Hour).Format(time.RFC3339),
+						},
 					},
 				},
 			},
-		},
-	}
+		}
 
 	blocked, reason, next := isAuthBlockedForModel(auth, "gpt-5-codex", now)
 	if !blocked {
-		t.Fatal("expected codex auth to be blocked when used_percent >= 90")
+		t.Fatal("expected codex auth to be blocked when used_percent >= 80")
 	}
 	if reason != blockReasonCooldown {
 		t.Fatalf("block reason = %v, want cooldown", reason)
