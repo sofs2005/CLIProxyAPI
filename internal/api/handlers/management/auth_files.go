@@ -979,6 +979,11 @@ type codex401CleanResponse struct {
 	Items      []codex401CleanItem `json:"items"`
 }
 
+type codex401ProbeResult struct {
+	StatusCode   int
+	Unauthorized bool
+}
+
 func (h *Handler) CleanCodex401AuthFiles(c *gin.Context) {
 	if h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
@@ -994,7 +999,7 @@ func (h *Handler) CleanCodex401AuthFiles(c *gin.Context) {
 		auth.EnsureIndex()
 		resp.Scanned++
 
-		statusCode, errProbe := h.probeCodex401(ctx, auth)
+		probeResult, errProbe := h.probeCodex401(ctx, auth)
 		if errProbe != nil {
 			resp.Failed++
 			resp.Items = append(resp.Items, codex401CleanItem{
@@ -1006,7 +1011,7 @@ func (h *Handler) CleanCodex401AuthFiles(c *gin.Context) {
 			})
 			continue
 		}
-		if statusCode != http.StatusUnauthorized {
+		if !probeResult.Unauthorized {
 			continue
 		}
 
@@ -1015,7 +1020,7 @@ func (h *Handler) CleanCodex401AuthFiles(c *gin.Context) {
 			Name:       authCleanerName(auth),
 			AuthIndex:  auth.Index,
 			Provider:   strings.TrimSpace(auth.Provider),
-			StatusCode: statusCode,
+			StatusCode: probeResult.StatusCode,
 			Result:     "deleted",
 		}
 		if _, _, errDelete := h.deleteAuthFileByName(ctx, authCleanerDeleteKey(auth)); errDelete != nil {
@@ -1120,9 +1125,9 @@ func authCleanerDeleteKey(auth *coreauth.Auth) string {
 	return strings.TrimSpace(auth.ID)
 }
 
-func (h *Handler) probeCodex401(ctx context.Context, auth *coreauth.Auth) (int, error) {
+func (h *Handler) probeCodex401(ctx context.Context, auth *coreauth.Auth) (codex401ProbeResult, error) {
 	if auth == nil {
-		return 0, fmt.Errorf("auth is nil")
+		return codex401ProbeResult{}, fmt.Errorf("auth is nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -1130,16 +1135,16 @@ func (h *Handler) probeCodex401(ctx context.Context, auth *coreauth.Auth) (int, 
 
 	token, errToken := h.resolveTokenForAuth(ctx, auth)
 	if errToken != nil {
-		return 0, fmt.Errorf("resolve auth token failed: %w", errToken)
+		return codex401ProbeResult{}, fmt.Errorf("resolve auth token failed: %w", errToken)
 	}
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return 0, fmt.Errorf("auth token not found")
+		return codex401ProbeResult{}, fmt.Errorf("auth token not found")
 	}
 
 	req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, codex401ProbeURL, nil)
 	if errReq != nil {
-		return 0, fmt.Errorf("build probe request failed: %w", errReq)
+		return codex401ProbeResult{}, fmt.Errorf("build probe request failed: %w", errReq)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -1151,11 +1156,39 @@ func (h *Handler) probeCodex401(ctx context.Context, auth *coreauth.Auth) (int, 
 	client := &http.Client{Timeout: defaultAPICallTimeout, Transport: h.apiCallTransport(auth)}
 	resp, errDo := client.Do(req)
 	if errDo != nil {
-		return 0, fmt.Errorf("probe request failed: %w", errDo)
+		return codex401ProbeResult{}, fmt.Errorf("probe request failed: %w", errDo)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode, nil
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	result := codex401ProbeResult{StatusCode: resp.StatusCode}
+	if resp.StatusCode == http.StatusUnauthorized {
+		result.Unauthorized = true
+		return result, nil
+	}
+	if codexProbeBodyUnauthorized(body) {
+		result.Unauthorized = true
+	}
+	return result, nil
+}
+
+func codexProbeBodyUnauthorized(body []byte) bool {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return false
+	}
+	var payload struct {
+		Detail any `json:"detail"`
+		Error  any `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	for _, value := range []any{payload.Detail, payload.Error} {
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(value)), "Unauthorized") {
+			return true
+		}
+	}
+	return false
 }
 
 func codexAccountIDForAuth(auth *coreauth.Auth) string {

@@ -135,6 +135,111 @@ func TestCleanCodex401AuthFiles_DeletesOnlyCodex401(t *testing.T) {
 	}
 }
 
+func TestCleanCodex401AuthFiles_DeletesWhenProbeBodyContainsUnauthorizedDetail(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	probeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got == "Bearer bad-token" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"detail":"Unauthorized"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(probeServer.Close)
+
+	originalProbeURL := codex401ProbeURL
+	codex401ProbeURL = probeServer.URL
+	t.Cleanup(func() { codex401ProbeURL = originalProbeURL })
+
+	authDir := t.TempDir()
+	badFile := filepath.Join(authDir, "codex-detail-unauthorized.json")
+	goodFile := filepath.Join(authDir, "codex-good.json")
+	for path := range map[string]struct{}{badFile: {}, goodFile: {}} {
+		if err := os.WriteFile(path, []byte(`{"type":"codex"}`), 0o600); err != nil {
+			t.Fatalf("write auth file %s: %v", path, err)
+		}
+	}
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	for _, auth := range []*coreauth.Auth{
+		{
+			ID:       "codex-detail-unauthorized.json",
+			FileName: "codex-detail-unauthorized.json",
+			Provider: "codex",
+			Attributes: map[string]string{
+				"path": badFile,
+			},
+			Metadata: map[string]any{
+				"type":         "codex",
+				"access_token": "bad-token",
+				"account_id":   "acct-bad",
+			},
+		},
+		{
+			ID:       "codex-good.json",
+			FileName: "codex-good.json",
+			Provider: "codex",
+			Attributes: map[string]string{
+				"path": goodFile,
+			},
+			Metadata: map[string]any{
+				"type":         "codex",
+				"access_token": "good-token",
+				"account_id":   "acct-good",
+			},
+		},
+	} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register auth %s: %v", auth.FileName, err)
+		}
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, manager)
+	h.tokenStore = store
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/auth-files/clean-codex-401", nil)
+
+	h.CleanCodex401AuthFiles(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Scanned    int `json:"scanned"`
+		Matched401 int `json:"matched_401"`
+		Deleted    int `json:"deleted"`
+		Failed     int `json:"failed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Scanned != 2 {
+		t.Fatalf("expected scanned=2, got %d", payload.Scanned)
+	}
+	if payload.Matched401 != 1 {
+		t.Fatalf("expected matched_401=1, got %d", payload.Matched401)
+	}
+	if payload.Deleted != 1 {
+		t.Fatalf("expected deleted=1, got %d", payload.Deleted)
+	}
+	if payload.Failed != 0 {
+		t.Fatalf("expected failed=0, got %d", payload.Failed)
+	}
+
+	if _, err := os.Stat(badFile); !os.IsNotExist(err) {
+		t.Fatalf("expected unauthorized-detail codex file removed, stat err: %v", err)
+	}
+	if _, err := os.Stat(goodFile); err != nil {
+		t.Fatalf("expected good codex file kept, stat err: %v", err)
+	}
+}
+
 func TestCleanCodex401AuthFiles_ReportsDeleteFailure(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)
