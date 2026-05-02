@@ -24,11 +24,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/tui"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -417,23 +417,8 @@ func main() {
 			configFileExists = true
 		}
 	}
-	usage.SetStatisticsEnabled(cfg.UsageStatisticsEnabled)
+	redisqueue.SetUsageStatisticsEnabled(cfg.UsageStatisticsEnabled)
 	coreauth.SetQuotaCooldownDisabled(cfg.DisableCooling)
-
-	resolveUsagePersistencePath := func(configPath string) string {
-		if writableBase != "" {
-			return filepath.Join(writableBase, "usage.json")
-		}
-
-		trimmed := strings.TrimSpace(configPath)
-		if trimmed != "" {
-			if info, errStat := os.Stat(trimmed); errStat == nil && info.IsDir() {
-				return filepath.Join(trimmed, "usage.json")
-			}
-			return filepath.Join(filepath.Dir(trimmed), "usage.json")
-		}
-		return filepath.Join(wd, "usage.json")
-	}
 
 	if err = logging.ConfigureLogOutput(cfg); err != nil {
 		log.Errorf("failed to configure log output: %v", err)
@@ -505,35 +490,8 @@ func main() {
 		if localModel && (!tuiMode || standalone) {
 			log.Info("Local model mode: using embedded model catalog, remote model updates disabled")
 		}
-		startUsagePersistence := func() func() {
-			usagePersistencePath := resolveUsagePersistencePath(configFilePath)
-			legacyUsagePath := filepath.Join(filepath.Dir(usagePersistencePath), "usage", "usage.json")
-			if _, errTarget := os.Stat(usagePersistencePath); errors.Is(errTarget, os.ErrNotExist) {
-				if _, errLegacy := os.Stat(legacyUsagePath); errLegacy == nil {
-					if errMkdir := os.MkdirAll(filepath.Dir(usagePersistencePath), 0o755); errMkdir != nil {
-						log.WithError(errMkdir).Warn("failed to prepare usage persistence directory")
-					} else if errRename := os.Rename(legacyUsagePath, usagePersistencePath); errRename != nil {
-						log.WithError(errRename).Warn("failed to migrate legacy usage persistence file")
-					}
-				}
-			}
-			if errUsagePersist := usage.StartPersistence(usagePersistencePath, 0); errUsagePersist != nil {
-				log.WithError(errUsagePersist).Warn("failed to initialize usage persistence")
-			}
-			return func() {
-				stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if errUsageStop := usage.StopPersistence(stopCtx); errUsageStop != nil {
-					log.WithError(errUsageStop).Warn("failed to flush usage persistence on shutdown")
-				}
-			}
-		}
-
 		if tuiMode {
 			if standalone {
-				stopUsagePersistence := startUsagePersistence()
-				defer stopUsagePersistence()
-
 				// Standalone mode: start an embedded local server and connect TUI client to it.
 				managementasset.StartAutoUpdater(context.Background(), configFilePath)
 				misc.StartAntigravityVersionUpdater(context.Background())
@@ -610,9 +568,6 @@ func main() {
 				}
 			}
 		} else {
-			stopUsagePersistence := startUsagePersistence()
-			defer stopUsagePersistence()
-
 			// Start the main proxy service
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
 			misc.StartAntigravityVersionUpdater(context.Background())

@@ -456,6 +456,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	} else {
 		entry["health_status"] = "healthy"
 	}
+	entry["success"] = auth.Success
+	entry["failed"] = auth.Failed
+	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email
 	}
