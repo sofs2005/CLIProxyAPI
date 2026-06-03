@@ -836,7 +836,7 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 					return
 				}
 				deleted++
-				h.disableAuth(ctx, full)
+				h.removeAuth(ctx, full)
 			}
 		}
 		c.JSON(200, gin.H{"status": "ok", "deleted": deleted})
@@ -1068,9 +1068,9 @@ func (h *Handler) deleteAuthFileByResolvedTarget(ctx context.Context, targetPath
 		return deletedName, http.StatusInternalServerError, errDeleteRecord
 	}
 	if targetID != "" {
-		h.disableAuth(ctx, targetID)
+		h.removeAuth(ctx, targetID)
 	} else {
-		h.disableAuth(ctx, targetPath)
+		h.removeAuth(ctx, targetPath)
 	}
 	return deletedName, http.StatusOK, nil
 }
@@ -1733,7 +1733,7 @@ func syncAuthFileDisabledState(auth *coreauth.Auth) {
 	auth.StatusMessage = ""
 }
 
-func (h *Handler) disableAuth(ctx context.Context, id string) {
+func (h *Handler) removeAuth(ctx context.Context, id string) {
 	if h == nil || h.authManager == nil {
 		return
 	}
@@ -1741,25 +1741,15 @@ func (h *Handler) disableAuth(ctx context.Context, id string) {
 	if id == "" {
 		return
 	}
-	if auth, ok := h.authManager.GetByID(id); ok {
-		auth.Disabled = true
-		auth.Status = coreauth.StatusDisabled
-		auth.StatusMessage = "removed via management API"
-		auth.UpdatedAt = time.Now()
-		_, _ = h.authManager.Update(ctx, auth)
+	if _, ok := h.authManager.GetByID(id); ok {
+		h.authManager.Remove(ctx, id)
 		return
 	}
 	authID := h.authIDForPath(id)
 	if authID == "" {
 		return
 	}
-	if auth, ok := h.authManager.GetByID(authID); ok {
-		auth.Disabled = true
-		auth.Status = coreauth.StatusDisabled
-		auth.StatusMessage = "removed via management API"
-		auth.UpdatedAt = time.Now()
-		_, _ = h.authManager.Update(ctx, auth)
-	}
+	h.authManager.Remove(ctx, authID)
 }
 
 func (h *Handler) deleteTokenRecord(ctx context.Context, path string) error {
