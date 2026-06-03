@@ -711,6 +711,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
+
+		mgmt.POST("/codex-free-refresh", s.mgmt.RefreshCodexFreeAccounts)
+		mgmt.GET("/codex-free-refresh/:taskId", s.mgmt.GetRefreshCodexFreeStatus)
 	}
 }
 
@@ -764,6 +767,7 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	}
 
 	patched := injectModelPriceDropdownClipPatch(data)
+	patched = injectCodexFreeRefreshPatch(patched)
 
 	etag := fmt.Sprintf(`"%x"`, sha256.Sum256(patched))
 	c.Header("ETag", etag)
@@ -1091,6 +1095,207 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
 	setTimeout(handleRouteChange, 300);
 	setTimeout(handleRouteChange, 1200);
 	setTimeout(handleRouteChange, 2500);
+})();
+</script>`)
+
+	lower := bytes.ToLower(html)
+	bodyClose := []byte("</body>")
+	if idx := bytes.LastIndex(lower, bodyClose); idx >= 0 {
+		out := make([]byte, 0, len(html)+len(patch))
+		out = append(out, html[:idx]...)
+		out = append(out, patch...)
+		out = append(out, html[idx:]...)
+		return out
+	}
+	return append(html, patch...)
+}
+
+func injectCodexFreeRefreshPatch(html []byte) []byte {
+	const marker = "__cpa_codex_free_refresh_patch__"
+	if len(html) == 0 || bytes.Contains(html, []byte(marker)) {
+		return html
+	}
+
+	patch := []byte(`<script>
+(function () {
+  var MARKER = "__cpa_codex_free_refresh_patch__";
+  if (window[MARKER]) return;
+  window[MARKER] = true;
+
+  function isAuthRoute() {
+    var hash = (window.location.hash || "").toLowerCase();
+    return hash.indexOf("/auth") !== -1 || hash.indexOf("auth-files") !== -1 || hash.indexOf("凭证") !== -1;
+  }
+
+  function findAuthSection() {
+    var selectors = ["[class*='auth']", "[id*='auth']", "section", ".card", ".panel"];
+    for (var i = 0; i < selectors.length; i++) {
+      var nodes = document.querySelectorAll(selectors[i]);
+      for (var j = 0; j < nodes.length; j++) {
+        var text = (nodes[j].innerText || "").toLowerCase();
+        if (text.indexOf("auth") !== -1 || text.indexOf("凭证") !== -1) {
+          return nodes[j];
+        }
+      }
+    }
+    return null;
+  }
+
+  function createButton() {
+    var btn = document.createElement("button");
+    btn.id = "codex-free-refresh-btn";
+    btn.textContent = "⟳ Refresh Free Accounts";
+    btn.style.cssText = "margin:8px 0;padding:6px 14px;border:1px solid #475569;border-radius:6px;background:#1e293b;color:#e2e8f0;cursor:pointer;font-size:13px;";
+    btn.onmouseenter = function () { btn.style.background = "#334155"; };
+    btn.onmouseleave = function () { btn.style.background = "#1e293b"; };
+    btn.onclick = startRefresh;
+    return btn;
+  }
+
+  function createStatusEl() {
+    var el = document.createElement("div");
+    el.id = "codex-free-refresh-status";
+    el.style.cssText = "margin:4px 0 8px;font-size:12px;color:#94a3b8;white-space:pre-wrap;";
+    return el;
+  }
+
+  function getMgmtBase() {
+    var scripts = document.querySelectorAll("script[src]");
+    for (var i = 0; i < scripts.length; i++) {
+      var src = scripts[i].src || "";
+      var idx = src.indexOf("/management.");
+      if (idx !== -1) {
+        return src.substring(0, src.lastIndexOf("/"));
+      }
+    }
+    return "/v0/management";
+  }
+
+  function apiHeaders() {
+    var h = { "Content-Type": "application/json" };
+    var meta = document.querySelector("meta[name='management-key']");
+    if (meta && meta.content) {
+      h["X-Management-Key"] = meta.content;
+    }
+    return h;
+  }
+
+  function startRefresh() {
+    var btn = document.getElementById("codex-free-refresh-btn");
+    var status = document.getElementById("codex-free-refresh-status");
+    if (!btn || !status) return;
+    btn.disabled = true;
+    btn.textContent = "Starting...";
+    status.textContent = "";
+
+    fetch(getMgmtBase() + "/codex-free-refresh", { method: "POST", headers: apiHeaders() })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) {
+          status.textContent = "Error: " + data.error;
+          btn.disabled = false;
+          btn.textContent = "⟳ Refresh Free Accounts";
+          return;
+        }
+        if (data.total === 0) {
+          status.textContent = "No free codex accounts found.";
+          btn.disabled = false;
+          btn.textContent = "⟳ Refresh Free Accounts";
+          return;
+        }
+        status.textContent = "Started: " + data.total + " accounts. Polling...";
+        pollStatus(data.task_id, data.total);
+      })
+      .catch(function (err) {
+        status.textContent = "Request failed: " + err;
+        btn.disabled = false;
+        btn.textContent = "⟳ Refresh Free Accounts";
+      });
+  }
+
+  function pollStatus(taskId, total) {
+    var btn = document.getElementById("codex-free-refresh-btn");
+    var status = document.getElementById("codex-free-refresh-status");
+    if (!btn || !status) return;
+
+    var interval = setInterval(function () {
+      fetch(getMgmtBase() + "/codex-free-refresh/" + encodeURIComponent(taskId), { headers: apiHeaders() })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data.error) {
+            clearInterval(interval);
+            status.textContent = "Error: " + data.error;
+            btn.disabled = false;
+            btn.textContent = "⟳ Refresh Free Accounts";
+            return;
+          }
+          var lines = [];
+          lines.push("Progress: " + data.done + "/" + data.total + " | Success: " + data.success + " | Failed: " + data.failed);
+          if (data.results && data.results.length > 0) {
+            for (var i = 0; i < data.results.length; i++) {
+              var r = data.results[i];
+              var icon = r.success ? "✓" : "✗";
+              var detail = r.success ? "" : " (" + (r.error || "unknown") + ")";
+              lines.push("  " + icon + " " + (r.email || r.name || "?") + detail);
+            }
+          }
+          status.textContent = lines.join("\n");
+
+          if (data.status === "completed") {
+            clearInterval(interval);
+            btn.disabled = false;
+            btn.textContent = "⟳ Refresh Free Accounts";
+          }
+        })
+        .catch(function (err) {
+          clearInterval(interval);
+          status.textContent = "Poll failed: " + err;
+          btn.disabled = false;
+          btn.textContent = "⟳ Refresh Free Accounts";
+        });
+    }, 2000);
+  }
+
+  function injectUI() {
+    if (!isAuthRoute()) return;
+    if (document.getElementById("codex-free-refresh-btn")) return;
+
+    var section = findAuthSection();
+    var target = section || document.body;
+    if (!target) return;
+
+    var wrapper = document.createElement("div");
+    wrapper.id = "codex-free-refresh-wrapper";
+    wrapper.appendChild(createButton());
+    wrapper.appendChild(createStatusEl());
+    target.insertBefore(wrapper, target.firstChild);
+  }
+
+  var observer = null;
+  function setupObserver() {
+    if (observer || !window.MutationObserver || !document.body) return;
+    observer = new MutationObserver(function () {
+      if (isAuthRoute()) injectUI();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function handleRouteChange() {
+    if (isAuthRoute()) {
+      setupObserver();
+      setTimeout(injectUI, 300);
+      setTimeout(injectUI, 1200);
+    }
+  }
+
+  window.addEventListener("hashchange", handleRouteChange, true);
+  window.addEventListener("popstate", handleRouteChange, true);
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () { handleRouteChange(); }, { once: true });
+  } else {
+    handleRouteChange();
+  }
 })();
 </script>`)
 

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -3183,4 +3184,227 @@ func PopulateAuthContext(ctx context.Context, c *gin.Context) context.Context {
 		Headers: c.Request.Header,
 	}
 	return coreauth.WithRequestInfo(ctx, info)
+}
+
+// codexFreeRefreshTask tracks the progress of a batch refresh operation.
+type codexFreeRefreshTask struct {
+	mu      sync.Mutex
+	total   int
+	done    int
+	running bool
+	results []codexFreeRefreshResult
+}
+
+// codexFreeRefreshResult holds the outcome for a single account refresh.
+type codexFreeRefreshResult struct {
+	Name    string `json:"name"`
+	Email   string `json:"email"`
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+var (
+	codexFreeRefreshTasks   = make(map[string]*codexFreeRefreshTask)
+	codexFreeRefreshTasksMu sync.Mutex
+	codexFreeRefreshCounter int
+)
+
+// isCodexFreePlanAuth checks whether an auth record represents a Codex free-plan account.
+func isCodexFreePlanAuth(auth *coreauth.Auth) bool {
+	if auth == nil || auth.Attributes == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(auth.Attributes["plan_type"]), "free")
+}
+
+// RefreshCodexFreeAccounts starts a background task that sends a minimal chat
+// request to each Codex free-plan account in sequence, with random delays
+// between accounts to avoid triggering risk control.
+func (h *Handler) RefreshCodexFreeAccounts(c *gin.Context) {
+	if h == nil || h.authManager == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler not initialized"})
+		return
+	}
+
+	auths := h.authManager.List()
+	var targets []*coreauth.Auth
+	for _, a := range auths {
+		if isCodexFreePlanAuth(a) && !a.Disabled {
+			targets = append(targets, a)
+		}
+	}
+	if len(targets) == 0 {
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "message": "no free codex accounts found", "total": 0})
+		return
+	}
+
+	codexFreeRefreshTasksMu.Lock()
+	codexFreeRefreshCounter++
+	taskID := fmt.Sprintf("codex-free-refresh-%d-%d", time.Now().UnixMilli(), codexFreeRefreshCounter)
+	task := &codexFreeRefreshTask{
+		total:   len(targets),
+		running: true,
+		results: make([]codexFreeRefreshResult, 0, len(targets)),
+	}
+	codexFreeRefreshTasks[taskID] = task
+	codexFreeRefreshTasksMu.Unlock()
+
+	go h.runCodexFreeRefresh(taskID, task, targets)
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"status":  "started",
+		"task_id": taskID,
+		"total":   len(targets),
+	})
+}
+
+// runCodexFreeRefresh processes each target account sequentially.
+func (h *Handler) runCodexFreeRefresh(taskID string, task *codexFreeRefreshTask, targets []*coreauth.Auth) {
+	defer func() {
+		task.mu.Lock()
+		task.running = false
+		task.mu.Unlock()
+	}()
+
+	for i, auth := range targets {
+		result := codexFreeRefreshResult{
+			Name:  auth.FileName,
+			Email: authEmail(auth),
+		}
+
+		errPing := h.pingCodexAccount(auth)
+		if errPing != nil {
+			result.Success = false
+			result.Error = errPing.Error()
+			log.WithError(errPing).WithField("auth", auth.FileName).Warn("codex free refresh ping failed")
+		} else {
+			result.Success = true
+			now := time.Now().UTC()
+			if auth.Metadata == nil {
+				auth.Metadata = make(map[string]any)
+			}
+			auth.Metadata["last_refresh"] = now.Format(time.RFC3339)
+			auth.LastRefreshedAt = now
+			auth.UpdatedAt = now
+			if _, errUpdate := h.authManager.Update(context.Background(), auth); errUpdate != nil {
+				log.WithError(errUpdate).WithField("auth", auth.FileName).Warn("failed to persist last_refresh after codex free ping")
+			}
+		}
+
+		task.mu.Lock()
+		task.results = append(task.results, result)
+		task.done = i + 1
+		task.mu.Unlock()
+
+		// Random delay between accounts (3-8 seconds) to avoid risk control.
+		if i < len(targets)-1 {
+			jitter := time.Duration(3000+rand.IntN(5000)) * time.Millisecond
+			time.Sleep(jitter)
+		}
+	}
+}
+
+// pingCodexAccount sends a minimal chat request to activate the account cycle.
+func (h *Handler) pingCodexAccount(auth *coreauth.Auth) error {
+	token, errToken := h.resolveTokenForAuth(context.Background(), auth)
+	if errToken != nil {
+		return fmt.Errorf("resolve token: %w", errToken)
+	}
+	if token == "" {
+		return fmt.Errorf("empty access token")
+	}
+
+	accountID := codexAccountIDForAuth(auth)
+
+	minimalBody := `{"model":"gpt-4o-mini","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true,"instructions":""}`
+
+	req, errNewReq := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		"https://chatgpt.com/backend-api/codex/responses",
+		strings.NewReader(minimalBody),
+	)
+	if errNewReq != nil {
+		return fmt.Errorf("build request: %w", errNewReq)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "codex-tui/0.135.0 (Macintosh; Intel Mac OS X 10_15_7)")
+	req.Header.Set("Originator", "codex-tui")
+	if accountID != "" {
+		req.Header.Set("ChatGPT-Account-Id", accountID)
+	}
+
+	httpClient := &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: h.apiCallTransport(auth),
+	}
+
+	resp, errDo := httpClient.Do(req)
+	if errDo != nil {
+		return fmt.Errorf("request failed: %w", errDo)
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.Errorf("ping response body close error: %v", errClose)
+		}
+	}()
+
+	// Read and discard the response body to complete the request cycle.
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("upstream returned status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// GetRefreshCodexFreeStatus returns the current progress of a refresh task.
+func (h *Handler) GetRefreshCodexFreeStatus(c *gin.Context) {
+	taskID := c.Param("taskId")
+	if taskID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing taskId"})
+		return
+	}
+
+	codexFreeRefreshTasksMu.Lock()
+	task, ok := codexFreeRefreshTasks[taskID]
+	codexFreeRefreshTasksMu.Unlock()
+
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		return
+	}
+
+	task.mu.Lock()
+	defer task.mu.Unlock()
+
+	status := "running"
+	if !task.running {
+		status = "completed"
+	}
+
+	successCount := 0
+	failCount := 0
+	for _, r := range task.results {
+		if r.Success {
+			successCount++
+		} else {
+			failCount++
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  status,
+		"total":   task.total,
+		"done":    task.done,
+		"success": successCount,
+		"failed":  failCount,
+		"results": task.results,
+	})
 }
