@@ -1171,13 +1171,65 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     return "/v0/management";
   }
 
-  function apiHeaders() {
-    var h = { "Content-Type": "application/json" };
-    var meta = document.querySelector("meta[name='management-key']");
-    if (meta && meta.content) {
-      h["X-Management-Key"] = meta.content;
+  function readParamValue(source, names) {
+    if (!source) return "";
+    var raw = source.charAt(0) === "#" ? source.substring(1) : source;
+    var queryIndex = raw.indexOf("?");
+    if (queryIndex !== -1) raw = raw.substring(queryIndex + 1);
+    try {
+      var params = new URLSearchParams(raw);
+      for (var i = 0; i < names.length; i++) {
+        var value = params.get(names[i]);
+        if (value) return value;
+      }
+    } catch (e) {}
+    return "";
+  }
+
+  function storedRefreshKey() {
+    try {
+      return window.sessionStorage.getItem("cpa_codex_free_refresh_management_key") || "";
+    } catch (e) {
+      return "";
     }
-    return h;
+  }
+
+  function saveRefreshKey(key) {
+    try {
+      window.sessionStorage.setItem("cpa_codex_free_refresh_management_key", key);
+    } catch (e) {}
+  }
+
+  function managementKey() {
+    var names = ["management_key", "managementKey", "management-key", "x-management-key", "secret_key", "secretKey", "secret-key"];
+    var meta = document.querySelector("meta[name='management-key'],meta[name='x-management-key'],meta[name='secret-key']");
+    if (meta && meta.content) return meta.content;
+    return readParamValue(window.location.search, names) ||
+      readParamValue(window.location.hash, names) ||
+      storedRefreshKey();
+  }
+
+  function requireManagementKey(status) {
+    var key = managementKey();
+    if (key) return key;
+    key = window.prompt("Management key is required for Codex free account refresh:", "");
+    key = (key || "").trim();
+    if (key) {
+      saveRefreshKey(key);
+      return key;
+    }
+    if (status) status.textContent = "Management key is required.";
+    return "";
+  }
+
+  function apiHeaders(status) {
+    var key = requireManagementKey(status);
+    if (!key) return null;
+    return {
+      "Content-Type": "application/json",
+      "X-Management-Key": key,
+      "Authorization": "Bearer " + key
+    };
   }
 
   function startRefresh() {
@@ -1188,7 +1240,14 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     btn.textContent = "Starting...";
     status.textContent = "";
 
-    fetch(getMgmtBase() + "/codex-free-refresh", { method: "POST", headers: apiHeaders() })
+    var headers = apiHeaders(status);
+    if (!headers) {
+      btn.disabled = false;
+      btn.textContent = "⟳ Refresh Free Accounts";
+      return;
+    }
+
+    fetch(getMgmtBase() + "/codex-free-refresh", { method: "POST", headers: headers })
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data.error) {
@@ -1219,7 +1278,14 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     if (!btn || !status) return;
 
     var interval = setInterval(function () {
-      fetch(getMgmtBase() + "/codex-free-refresh/" + encodeURIComponent(taskId), { headers: apiHeaders() })
+      var headers = apiHeaders(status);
+      if (!headers) {
+        clearInterval(interval);
+        btn.disabled = false;
+        btn.textContent = "⟳ Refresh Free Accounts";
+        return;
+      }
+      fetch(getMgmtBase() + "/codex-free-refresh/" + encodeURIComponent(taskId), { headers: headers })
         .then(function (r) { return r.json(); })
         .then(function (data) {
           if (data.error) {

@@ -666,6 +666,12 @@ func TestServeManagementControlPanel_DisablesCaching(t *testing.T) {
 	if !strings.Contains(body, "__cpa_model_price_dropdown_clip_patch__") {
 		t.Fatalf("expected dropdown patch marker in management response, got %s", body)
 	}
+	if !strings.Contains(body, "__cpa_codex_free_refresh_patch__") {
+		t.Fatalf("expected codex free refresh patch marker in management response, got %s", body)
+	}
+	if !strings.Contains(body, "X-Management-Key") || !strings.Contains(body, "Authorization") {
+		t.Fatalf("expected codex free refresh patch to attach management auth headers, got %s", body)
+	}
 	if strings.Contains(body, "__cpa_api_key_usage_dashboard_patch__") {
 		t.Fatalf("expected API key usage dashboard patch marker to be absent from management response, got %s", body)
 	}
