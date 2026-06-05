@@ -3306,10 +3306,10 @@ func (h *Handler) runCodexFreeRefresh(taskID string, task *codexFreeRefreshTask,
 func (h *Handler) pingCodexAccount(auth *coreauth.Auth) error {
 	executor := codexexecutor.NewCodexExecutor(h.cfg)
 
-	minimalPayload := []byte(`{"model":"gpt-4o-mini","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true,"instructions":""}`)
+	minimalPayload := []byte(`{"model":"gpt-5.4-mini","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true,"instructions":""}`)
 
 	req := cliproxyexecutor.Request{
-		Model:   "gpt-4o-mini",
+		Model:   "gpt-5.4-mini",
 		Payload: minimalPayload,
 		Format:  sdktranslator.FromString("openai"),
 	}
