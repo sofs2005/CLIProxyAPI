@@ -722,6 +722,9 @@ func TestServeManagementControlPanel_DisablesCaching(t *testing.T) {
 	if !strings.Contains(body, `credentials: "same-origin"`) {
 		t.Fatalf("expected codex refresh patch to include same-origin credentials, got %s", body)
 	}
+	if !strings.Contains(body, "fetchAuthFilesAttempt") || !strings.Contains(body, "r.status === 401") {
+		t.Fatalf("expected codex refresh patch to retry auth-files after temporary 401, got %s", body)
+	}
 	if !strings.Contains(body, "auth files") || !strings.Contains(body, "data-state") || !strings.Contains(body, "setTimeout(scheduleAuthPatch, 2500)") || !strings.Contains(body, "replaceState") {
 		t.Fatalf("expected robust auth route detection in codex refresh patch, got %s", body)
 	}

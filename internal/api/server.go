@@ -1325,10 +1325,20 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     var now = Date.now();
     if (authFilesCache && now - authFilesCacheAt < 10000) return Promise.resolve(authFilesCache);
     if (authFilesPending) return authFilesPending;
+    authFilesPending = fetchAuthFilesAttempt(status, 0);
+    return authFilesPending;
+  }
+
+  function fetchAuthFilesAttempt(status, attempt) {
     var headers = apiHeaders(status);
     if (!headers) return Promise.resolve([]);
-    authFilesPending = fetch(getMgmtBase() + "/auth-files", { headers: headers, credentials: "same-origin" })
+    return fetch(getMgmtBase() + "/auth-files", { headers: headers, credentials: "same-origin" })
       .then(function (r) {
+        if (r.status === 401 && attempt < 8) {
+          return new Promise(function (resolve) {
+            setTimeout(function () { resolve(fetchAuthFilesAttempt(status, attempt + 1)); }, 500 + attempt * 250);
+          });
+        }
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
       })
@@ -1344,7 +1354,6 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
         if (status) status.textContent = "Auth files request failed: " + err;
         return authFilesCache || [];
       });
-    return authFilesPending;
   }
 
   function fileMatchValues(file) {
