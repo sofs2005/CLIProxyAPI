@@ -634,6 +634,50 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 	}
 }
 
+func TestServeManagementControlPanel_IssuesSessionCookieForInjectedAPIs(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	server := newTestServer(t)
+
+	staticDir := filepath.Join(filepath.Dir(server.configFilePath), "static")
+	if err := os.MkdirAll(staticDir, 0o755); err != nil {
+		t.Fatalf("failed to create static dir: %v", err)
+	}
+	filePath := filepath.Join(staticDir, "management.html")
+	if err := os.WriteFile(filePath, []byte("<html><body><div>ok</div></body></html>"), 0o644); err != nil {
+		t.Fatalf("failed to write management asset: %v", err)
+	}
+
+	panelReq := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+	panelReq.Header.Set("Authorization", "Bearer test-management-key")
+	panelRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(panelRR, panelReq)
+	if panelRR.Code != http.StatusOK {
+		t.Fatalf("panel status = %d body=%s", panelRR.Code, panelRR.Body.String())
+	}
+
+	var sessionCookie *http.Cookie
+	for _, cookie := range panelRR.Result().Cookies() {
+		if cookie.Name == "cpa_management_session" {
+			sessionCookie = cookie
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatalf("expected /management.html to issue management session cookie")
+	}
+	if !sessionCookie.HttpOnly {
+		t.Fatalf("expected management session cookie to be HttpOnly")
+	}
+
+	authFilesReq := httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)
+	authFilesReq.AddCookie(sessionCookie)
+	authFilesRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(authFilesRR, authFilesReq)
+	if authFilesRR.Code != http.StatusOK {
+		t.Fatalf("auth-files with session cookie status = %d body=%s", authFilesRR.Code, authFilesRR.Body.String())
+	}
+}
+
 func TestServeManagementControlPanel_DisablesCaching(t *testing.T) {
 	server := newTestServer(t)
 	server.cfg.RemoteManagement.SecretKey = "test"

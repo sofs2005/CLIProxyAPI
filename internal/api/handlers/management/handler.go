@@ -200,6 +200,36 @@ func (h *Handler) verifyManagementSession(clientIP, token string) bool {
 	return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
 }
 
+// TryIssueSessionCookie verifies an optional management key on a non-management page
+// request and issues the HttpOnly management session cookie when the key is valid.
+// Missing keys are ignored so loading the control panel never increments failure counters.
+func (h *Handler) TryIssueSessionCookie(c *gin.Context) {
+	if h == nil || c == nil || c.Request == nil {
+		return
+	}
+	clientIP := c.ClientIP()
+	localClient := clientIP == "127.0.0.1" || clientIP == "::1"
+	provided := ""
+	if ah := c.GetHeader("Authorization"); ah != "" {
+		parts := strings.SplitN(ah, " ", 2)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+			provided = parts[1]
+		} else {
+			provided = ah
+		}
+	}
+	if provided == "" {
+		provided = c.GetHeader("X-Management-Key")
+	}
+	if strings.TrimSpace(provided) == "" {
+		return
+	}
+	allowed, _, _ := h.AuthenticateManagementKey(clientIP, localClient, provided)
+	if allowed {
+		h.setManagementSessionCookie(c, clientIP)
+	}
+}
+
 func (h *Handler) setManagementSessionCookie(c *gin.Context, clientIP string) {
 	if h == nil || c == nil || clientIP == "" {
 		return

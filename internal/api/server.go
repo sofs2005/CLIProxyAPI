@@ -779,6 +779,9 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 
 	patched := injectModelPriceDropdownClipPatch(data)
 	patched = injectCodexFreeRefreshPatch(patched)
+	if s.mgmt != nil {
+		s.mgmt.TryIssueSessionCookie(c)
+	}
 
 	etag := fmt.Sprintf(`"%x"`, sha256.Sum256(patched))
 	c.Header("ETag", etag)
