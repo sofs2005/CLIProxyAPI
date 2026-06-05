@@ -32,9 +32,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	codexexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"golang.org/x/oauth2"
@@ -3298,59 +3301,28 @@ func (h *Handler) runCodexFreeRefresh(taskID string, task *codexFreeRefreshTask,
 }
 
 // pingCodexAccount sends a minimal chat request to activate the account cycle.
+// It reuses the existing CodexExecutor to ensure all headers, token resolution,
+// proxy transport, and request body formatting are identical to normal requests.
 func (h *Handler) pingCodexAccount(auth *coreauth.Auth) error {
-	token, errToken := h.resolveTokenForAuth(context.Background(), auth)
-	if errToken != nil {
-		return fmt.Errorf("resolve token: %w", errToken)
+	executor := codexexecutor.NewCodexExecutor(h.cfg)
+
+	minimalPayload := []byte(`{"model":"gpt-4o-mini","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true,"instructions":""}`)
+
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-4o-mini",
+		Payload: minimalPayload,
+		Format:  sdktranslator.FromString("openai"),
 	}
-	if token == "" {
-		return fmt.Errorf("empty access token")
-	}
-
-	accountID := codexAccountIDForAuth(auth)
-
-	minimalBody := `{"model":"gpt-4o-mini","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true,"instructions":""}`
-
-	req, errNewReq := http.NewRequestWithContext(
-		context.Background(),
-		http.MethodPost,
-		"https://chatgpt.com/backend-api/codex/responses",
-		strings.NewReader(minimalBody),
-	)
-	if errNewReq != nil {
-		return fmt.Errorf("build request: %w", errNewReq)
+	opts := cliproxyexecutor.Options{
+		Stream:       true,
+		SourceFormat: sdktranslator.FromString("openai"),
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "codex-tui/0.135.0 (Macintosh; Intel Mac OS X 10_15_7)")
-	req.Header.Set("Originator", "codex-tui")
-	if accountID != "" {
-		req.Header.Set("ChatGPT-Account-Id", accountID)
+	ctx := context.Background()
+	_, errExec := executor.Execute(ctx, auth, req, opts)
+	if errExec != nil {
+		return fmt.Errorf("codex executor ping failed: %w", errExec)
 	}
-
-	httpClient := &http.Client{
-		Timeout:   60 * time.Second,
-		Transport: h.apiCallTransport(auth),
-	}
-
-	resp, errDo := httpClient.Do(req)
-	if errDo != nil {
-		return fmt.Errorf("request failed: %w", errDo)
-	}
-	defer func() {
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("ping response body close error: %v", errClose)
-		}
-	}()
-
-	// Read and discard the response body to complete the request cycle.
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("upstream returned status %d", resp.StatusCode)
-	}
-
 	return nil
 }
 
