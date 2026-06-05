@@ -3311,11 +3311,11 @@ func (h *Handler) pingCodexAccount(auth *coreauth.Auth) error {
 	req := cliproxyexecutor.Request{
 		Model:   "gpt-5.4-mini",
 		Payload: minimalPayload,
-		Format:  sdktranslator.FromString("openai"),
+		Format:  sdktranslator.FromString("codex"),
 	}
 	opts := cliproxyexecutor.Options{
 		Stream:       true,
-		SourceFormat: sdktranslator.FromString("openai"),
+		SourceFormat: sdktranslator.FromString("codex"),
 	}
 
 	ctx := context.Background()
