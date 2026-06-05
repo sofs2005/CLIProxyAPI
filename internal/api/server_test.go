@@ -713,8 +713,11 @@ func TestServeManagementControlPanel_DisablesCaching(t *testing.T) {
 	if !strings.Contains(body, "__cpa_codex_free_refresh_patch__") {
 		t.Fatalf("expected codex free refresh patch marker in management response, got %s", body)
 	}
-	if strings.Contains(body, "management-key") || strings.Contains(body, "X-Management-Key") {
-		t.Fatalf("expected codex refresh patch not to expose management auth material, got %s", body)
+	if strings.Contains(body, "sessionStorage") || strings.Contains(body, "localStorage") || strings.Contains(body, "meta[name") || strings.Contains(body, `name="management-key"`) {
+		t.Fatalf("expected codex refresh patch not to expose management auth material via DOM or browser storage, got %s", body)
+	}
+	if !strings.Contains(body, "captureMgmtHeaders") || !strings.Contains(body, "X-Management-Key") {
+		t.Fatalf("expected codex refresh patch to capture management auth headers in memory, got %s", body)
 	}
 	if !strings.Contains(body, "auth_index") || !strings.Contains(body, "codex-single-refresh-btn") {
 		t.Fatalf("expected codex single refresh patch code in management response, got %s", body)

@@ -1202,8 +1202,63 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     return "/v0/management";
   }
 
-  function apiHeaders() {
-    return { "Content-Type": "application/json" };
+  var capturedMgmtHeaders = null;
+
+  function captureMgmtHeaders(input, init) {
+    try {
+      var url = typeof input === "string" ? input : (input && input.url) || "";
+      if (url.indexOf("/v0/management") === -1 || capturedMgmtHeaders) return;
+      var hdrs = (init && init.headers) || (input && input.headers) || {};
+      var headers = {};
+      var mgmtKey = "";
+      var auth = "";
+      if (typeof hdrs.get === "function") {
+        mgmtKey = hdrs.get("X-Management-Key") || hdrs.get("x-management-key") || "";
+        auth = hdrs.get("Authorization") || hdrs.get("authorization") || "";
+      } else if (Array.isArray(hdrs)) {
+        for (var i = 0; i < hdrs.length; i++) {
+          var name = String(hdrs[i][0] || "").toLowerCase();
+          var value = String(hdrs[i][1] || "");
+          if (name === "x-management-key") mgmtKey = value;
+          if (name === "authorization") auth = value;
+        }
+      } else if (typeof hdrs === "object") {
+        mgmtKey = hdrs["X-Management-Key"] || hdrs["x-management-key"] || "";
+        auth = hdrs["Authorization"] || hdrs["authorization"] || "";
+      }
+      if (mgmtKey) headers["X-Management-Key"] = String(mgmtKey).trim();
+      if (auth) headers["Authorization"] = String(auth).trim();
+      if (!headers["Authorization"] && headers["X-Management-Key"]) headers["Authorization"] = "Bearer " + headers["X-Management-Key"];
+      if (!headers["X-Management-Key"] && headers["Authorization"] && headers["Authorization"].toLowerCase().indexOf("bearer ") === 0) headers["X-Management-Key"] = headers["Authorization"].substring(7).trim();
+      if (headers["X-Management-Key"] || headers["Authorization"]) capturedMgmtHeaders = headers;
+    } catch (e) {}
+  }
+
+  (function () {
+    try {
+      var originalFetch = window.fetch;
+      if (!originalFetch || originalFetch.__cpa_codex_refresh_wrapped__) return;
+      var wrappedFetch = function (input, init) {
+        captureMgmtHeaders(input, init);
+        return originalFetch.apply(this, arguments);
+      };
+      wrappedFetch.__cpa_codex_refresh_wrapped__ = true;
+      window.fetch = wrappedFetch;
+      setTimeout(function () {
+        try {
+          if (!capturedMgmtHeaders) window.fetch(getMgmtBase() + "/config", { method: "GET", credentials: "same-origin" }).catch(function () {});
+        } catch (e) {}
+      }, 100);
+    } catch (e) {}
+  })();
+
+  function apiHeaders(status) {
+    var headers = { "Content-Type": "application/json" };
+    if (capturedMgmtHeaders) {
+      if (capturedMgmtHeaders["X-Management-Key"]) headers["X-Management-Key"] = capturedMgmtHeaders["X-Management-Key"];
+      if (capturedMgmtHeaders["Authorization"]) headers["Authorization"] = capturedMgmtHeaders["Authorization"];
+    }
+    return headers;
   }
 
   function startRefresh() {
