@@ -1218,7 +1218,7 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
       return;
     }
 
-    fetch(getMgmtBase() + "/codex-free-refresh", { method: "POST", headers: headers })
+    fetch(getMgmtBase() + "/codex-free-refresh", { method: "POST", headers: headers, credentials: "same-origin" })
       .then(function (r) {
           if (!r.ok) throw new Error("HTTP " + r.status);
           return r.json();
@@ -1265,7 +1265,7 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
         btn.textContent = "⟳ Refresh Free Accounts";
         return;
       }
-      fetch(getMgmtBase() + "/codex-free-refresh/" + encodeURIComponent(taskId), { headers: headers })
+      fetch(getMgmtBase() + "/codex-free-refresh/" + encodeURIComponent(taskId), { headers: headers, credentials: "same-origin" })
         .then(function (r) {
           if (!r.ok) throw new Error("HTTP " + r.status);
           return r.json();
@@ -1324,7 +1324,7 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     if (authFilesPending) return authFilesPending;
     var headers = apiHeaders(status);
     if (!headers) return Promise.resolve([]);
-    authFilesPending = fetch(getMgmtBase() + "/auth-files", { headers: headers })
+    authFilesPending = fetch(getMgmtBase() + "/auth-files", { headers: headers, credentials: "same-origin" })
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
@@ -1437,7 +1437,7 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
         btn.textContent = "Refresh";
         return;
       }
-      fetch(getMgmtBase() + "/codex-free-refresh/" + encodeURIComponent(taskId), { headers: headers })
+      fetch(getMgmtBase() + "/codex-free-refresh/" + encodeURIComponent(taskId), { headers: headers, credentials: "same-origin" })
         .then(function (r) {
           if (!r.ok) throw new Error("HTTP " + r.status);
           return r.json();
@@ -1480,6 +1480,7 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     fetch(getMgmtBase() + "/codex-free-refresh", {
       method: "POST",
       headers: headers,
+      credentials: "same-origin",
       body: JSON.stringify({ auth_index: file.auth_index })
     })
       .then(function (r) {

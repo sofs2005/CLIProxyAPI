@@ -675,6 +675,9 @@ func TestServeManagementControlPanel_DisablesCaching(t *testing.T) {
 	if !strings.Contains(body, "auth_index") || !strings.Contains(body, "codex-single-refresh-btn") {
 		t.Fatalf("expected codex single refresh patch code in management response, got %s", body)
 	}
+	if !strings.Contains(body, `credentials: "same-origin"`) {
+		t.Fatalf("expected codex refresh patch to include same-origin credentials, got %s", body)
+	}
 	if !strings.Contains(body, "auth files") || !strings.Contains(body, "data-state") || !strings.Contains(body, "setTimeout(scheduleAuthPatch, 2500)") || !strings.Contains(body, "replaceState") {
 		t.Fatalf("expected robust auth route detection in codex refresh patch, got %s", body)
 	}

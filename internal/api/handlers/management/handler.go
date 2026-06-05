@@ -3,11 +3,15 @@
 package management
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +35,9 @@ const attemptCleanupInterval = 1 * time.Hour
 
 // attemptMaxIdleTime controls how long an IP can be idle before cleanup
 const attemptMaxIdleTime = 2 * time.Hour
+
+const managementSessionCookieName = "cpa_management_session"
+const managementSessionTTL = 12 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
@@ -142,6 +149,78 @@ func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 	h.postAuthHook = hook
 }
 
+func (h *Handler) managementSessionSecret() string {
+	if h == nil {
+		return ""
+	}
+	if h.envSecret != "" {
+		return h.envSecret
+	}
+	if h.cfg != nil {
+		return h.cfg.RemoteManagement.SecretKey
+	}
+	return ""
+}
+
+func (h *Handler) signManagementSession(clientIP string, expires int64) string {
+	secret := h.managementSessionSecret()
+	if secret == "" || clientIP == "" || expires <= 0 {
+		return ""
+	}
+	payload := fmt.Sprintf("%s:%d", clientIP, expires)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(payload))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString([]byte(payload + ":" + sig))
+}
+
+func (h *Handler) verifyManagementSession(clientIP, token string) bool {
+	if h == nil || clientIP == "" || token == "" {
+		return false
+	}
+	raw, errDecode := base64.RawURLEncoding.DecodeString(token)
+	if errDecode != nil {
+		return false
+	}
+	parts := strings.Split(string(raw), ":")
+	if len(parts) != 3 {
+		return false
+	}
+	if parts[0] != clientIP {
+		return false
+	}
+	expires, errParse := strconv.ParseInt(parts[1], 10, 64)
+	if errParse != nil || time.Now().Unix() > expires {
+		return false
+	}
+	expected := h.signManagementSession(clientIP, expires)
+	if expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
+}
+
+func (h *Handler) setManagementSessionCookie(c *gin.Context, clientIP string) {
+	if h == nil || c == nil || clientIP == "" {
+		return
+	}
+	expires := time.Now().Add(managementSessionTTL)
+	token := h.signManagementSession(clientIP, expires.Unix())
+	if token == "" {
+		return
+	}
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     managementSessionCookieName,
+		Value:    token,
+		Path:     "/v0/management",
+		Expires:  expires,
+		MaxAge:   int(managementSessionTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   c.Request != nil && c.Request.TLS != nil,
+	})
+}
+
 // Middleware enforces access control for management endpoints.
 // All requests (local and remote) require a valid management key.
 // Additionally, remote access requires allow-remote-management=true.
@@ -165,6 +244,10 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			}
 		}
 		if provided == "" {
+			if sessionCookie, errCookie := c.Cookie(managementSessionCookieName); errCookie == nil && h.verifyManagementSession(clientIP, sessionCookie) {
+				c.Next()
+				return
+			}
 			provided = c.GetHeader("X-Management-Key")
 		}
 
@@ -173,6 +256,7 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
 			return
 		}
+		h.setManagementSessionCookie(c, clientIP)
 		c.Next()
 	}
 }
@@ -250,7 +334,6 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	}
 
 	if provided == "" {
-		fail()
 		return false, http.StatusUnauthorized, "missing management key"
 	}
 
