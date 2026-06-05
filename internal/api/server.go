@@ -768,6 +768,7 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 
 	patched := injectModelPriceDropdownClipPatch(data)
 	patched = injectCodexFreeRefreshPatch(patched)
+	patched = injectManagementKeyMeta(patched, c)
 
 	etag := fmt.Sprintf(`"%x"`, sha256.Sum256(patched))
 	c.Header("ETag", etag)
@@ -1171,60 +1172,67 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     return "/v0/management";
   }
 
-  function readParamValue(source, names) {
-    if (!source) return "";
-    var raw = source.charAt(0) === "#" ? source.substring(1) : source;
-    var queryIndex = raw.indexOf("?");
-    if (queryIndex !== -1) raw = raw.substring(queryIndex + 1);
+  // --- fetch interceptor: capture management key from panel's own requests ---
+  var _capturedMgmtKey = null;
+  (function () {
     try {
-      var params = new URLSearchParams(raw);
-      for (var i = 0; i < names.length; i++) {
-        var value = params.get(names[i]);
-        if (value) return value;
-      }
+      var origFetch = window.fetch;
+      if (!origFetch) return;
+      window.fetch = function (input, init) {
+        try {
+          var url = typeof input === "string" ? input : (input && input.url) || "";
+          if (url.indexOf("/v0/management") !== -1 && !_capturedMgmtKey) {
+            var hdrs = (init && init.headers) || (input && input.headers) || {};
+            var k = "";
+            if (typeof hdrs.get === "function") {
+              k = hdrs.get("X-Management-Key") || hdrs.get("x-management-key") || "";
+              if (!k) {
+                var auth = hdrs.get("Authorization") || hdrs.get("authorization") || "";
+                if (auth.toLowerCase().indexOf("bearer ") === 0) k = auth.substring(7).trim();
+              }
+            } else if (typeof hdrs === "object") {
+              k = hdrs["X-Management-Key"] || hdrs["x-management-key"] || "";
+              if (!k) {
+                var a = hdrs["Authorization"] || hdrs["authorization"] || "";
+                if (a.toLowerCase().indexOf("bearer ") === 0) k = a.substring(7).trim();
+              }
+            }
+            if (k) _capturedMgmtKey = k.trim();
+          }
+        } catch (e) {}
+        return origFetch.apply(this, arguments);
+      };
+      // Probe: trigger panel's global interceptor to attach key, then capture it
+      setTimeout(function () {
+        if (_capturedMgmtKey) return;
+        try {
+          origFetch(getMgmtBase() + "/config", { method: "GET", credentials: "same-origin" }).catch(function () {});
+        } catch (e) {}
+      }, 100);
     } catch (e) {}
-    return "";
-  }
+  })();
 
-  function storedRefreshKey() {
+  function getCapturedKey() {
+    if (_capturedMgmtKey) return _capturedMgmtKey;
+    // Priority 1: read from server-injected meta tag
     try {
-      return window.sessionStorage.getItem("cpa_codex_free_refresh_management_key") || "";
-    } catch (e) {
-      return "";
-    }
-  }
-
-  function saveRefreshKey(key) {
-    try {
-      window.sessionStorage.setItem("cpa_codex_free_refresh_management_key", key);
+      var meta = document.querySelector("meta[name='management-key']");
+      if (meta && meta.content) { _capturedMgmtKey = meta.content.trim(); return _capturedMgmtKey; }
     } catch (e) {}
-  }
-
-  function managementKey() {
-    var names = ["management_key", "managementKey", "management-key", "x-management-key", "secret_key", "secretKey", "secret-key"];
-    var meta = document.querySelector("meta[name='management-key'],meta[name='x-management-key'],meta[name='secret-key']");
-    if (meta && meta.content) return meta.content;
-    return readParamValue(window.location.search, names) ||
-      readParamValue(window.location.hash, names) ||
-      storedRefreshKey();
-  }
-
-  function requireManagementKey(status) {
-    var key = managementKey();
-    if (key) return key;
-    key = window.prompt("Management key is required for Codex free account refresh:", "");
-    key = (key || "").trim();
-    if (key) {
-      saveRefreshKey(key);
-      return key;
-    }
-    if (status) status.textContent = "Management key is required.";
+    // Priority 2: read from sessionStorage cache
+    try {
+      var s = window.sessionStorage.getItem("cpa_codex_free_refresh_management_key");
+      if (s) { _capturedMgmtKey = s; return s; }
+    } catch (e) {}
     return "";
   }
 
   function apiHeaders(status) {
-    var key = requireManagementKey(status);
-    if (!key) return null;
+    var key = getCapturedKey();
+    if (!key) {
+      if (status) status.textContent = "Waiting for panel to authenticate… please visit any other tab first, then come back.";
+      return null;
+    }
     return {
       "Content-Type": "application/json",
       "X-Management-Key": key,
@@ -1375,6 +1383,49 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
 		return out
 	}
 	return append(html, patch...)
+}
+
+// injectManagementKeyMeta inserts a <meta> tag containing the verified management key
+// so that injected client-side scripts can authenticate without prompting the user.
+func injectManagementKeyMeta(html []byte, c *gin.Context) []byte {
+	if c == nil {
+		return html
+	}
+	key := ""
+	if ah := c.GetHeader("Authorization"); ah != "" {
+		parts := strings.SplitN(ah, " ", 2)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+			key = strings.TrimSpace(parts[1])
+		}
+	}
+	if key == "" {
+		key = strings.TrimSpace(c.GetHeader("X-Management-Key"))
+	}
+	if key == "" {
+		return html
+	}
+	meta := fmt.Sprintf(`<meta name="management-key" content="%s">`, key)
+	lower := bytes.ToLower(html)
+	headClose := []byte("</head>")
+	if idx := bytes.Index(lower, headClose); idx >= 0 {
+		out := make([]byte, 0, len(html)+len(meta))
+		out = append(out, html[:idx]...)
+		out = append(out, []byte(meta)...)
+		out = append(out, html[idx:]...)
+		return out
+	}
+	bodyOpen := []byte("<body")
+	if idx := bytes.Index(lower, bodyOpen); idx >= 0 {
+		out := make([]byte, 0, len(html)+len(meta)+1)
+		out = append(out, html[:idx]...)
+		out = append(out, []byte(meta+"\n")...)
+		out = append(out, html[idx:]...)
+		return out
+	}
+	out := make([]byte, 0, len(html)+len(meta)+1)
+	out = append(out, []byte(meta+"\n")...)
+	out = append(out, html...)
+	return out
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {
