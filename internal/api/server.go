@@ -1133,18 +1133,35 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
   if (window[MARKER]) return;
   window[MARKER] = true;
 
+  function normalizeText(value) {
+    return String(value == null ? "" : value).toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
   function isAuthRoute() {
-    var hash = (window.location.hash || "").toLowerCase();
-    return hash.indexOf("/auth") !== -1 || hash.indexOf("auth-files") !== -1 || hash.indexOf("凭证") !== -1;
+    var locationText = normalizeText((window.location.hash || "") + " " + (window.location.pathname || "") + " " + (window.location.search || ""));
+    if (locationText.indexOf("/auth") !== -1 || locationText.indexOf("auth-files") !== -1 || locationText.indexOf("auth files") !== -1 || locationText.indexOf("认证文件") !== -1 || locationText.indexOf("凭证") !== -1) {
+      return true;
+    }
+    var activeSelectors = ["[aria-current='page']", "[aria-selected='true']", "[data-state='active']", ".active", "[class*='active']", "[role='tab']"];
+    for (var i = 0; i < activeSelectors.length; i++) {
+      var nodes = document.querySelectorAll(activeSelectors[i]);
+      for (var j = 0; j < nodes.length; j++) {
+        var text = normalizeText(nodes[j].innerText || nodes[j].textContent || "");
+        if (text.indexOf("auth files") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1) {
+          return true;
+        }
+      }
+    }
+    return !!findAuthSection();
   }
 
   function findAuthSection() {
-    var selectors = ["[class*='auth']", "[id*='auth']", "section", ".card", ".panel"];
+    var selectors = ["main [class*='auth']", "main [id*='auth']", "main section", "main .card", "main .panel", "[role='main'] [class*='auth']", "[role='main'] [id*='auth']", "[role='main'] section", "[role='main'] .card", "[role='main'] .panel", "[class*='auth']", "[id*='auth']", "section", ".card", ".panel"];
     for (var i = 0; i < selectors.length; i++) {
       var nodes = document.querySelectorAll(selectors[i]);
       for (var j = 0; j < nodes.length; j++) {
         var text = (nodes[j].innerText || "").toLowerCase();
-        if (text.indexOf("auth") !== -1 || text.indexOf("凭证") !== -1) {
+        if ((text.indexOf("codex") !== -1 || text.indexOf("auth") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1) && (text.indexOf("auth") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1 || text.indexOf("provider") !== -1)) {
           return nodes[j];
         }
       }
@@ -1578,28 +1595,17 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
   }
 
   function scheduleAuthPatch() {
-    if (!isAuthRoute()) {
-      stopObserver();
-      return;
-    }
     if (scheduled) return;
     scheduled = true;
     setTimeout(function () {
       scheduled = false;
-      if (!isAuthRoute()) {
-        stopObserver();
-        return;
-      }
+      if (!isAuthRoute()) return;
       injectUI();
       injectSingleRefreshButtons();
     }, 80);
   }
 
   function setupObserver() {
-    if (!isAuthRoute()) {
-      stopObserver();
-      return;
-    }
     if (observer || !window.MutationObserver || !document.body) return;
     observer = new MutationObserver(function () {
       scheduleAuthPatch();
@@ -1608,18 +1614,26 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
   }
 
   function handleRouteChange() {
-    if (!isAuthRoute()) {
-      stopObserver();
-      return;
-    }
     setupObserver();
     scheduleAuthPatch();
     setTimeout(scheduleAuthPatch, 300);
     setTimeout(scheduleAuthPatch, 1200);
+    setTimeout(scheduleAuthPatch, 2500);
   }
 
   window.addEventListener("hashchange", handleRouteChange, true);
   window.addEventListener("popstate", handleRouteChange, true);
+  if (window.history) {
+    ["pushState", "replaceState"].forEach(function (name) {
+      var original = window.history[name];
+      if (typeof original !== "function") return;
+      window.history[name] = function () {
+        var result = original.apply(this, arguments);
+        setTimeout(handleRouteChange, 0);
+        return result;
+      };
+    });
+  }
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () { handleRouteChange(); }, { once: true });
