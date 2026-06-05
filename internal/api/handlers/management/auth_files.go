@@ -3196,6 +3196,15 @@ type codexFreeRefreshResult struct {
 	Error   string `json:"error,omitempty"`
 }
 
+type codexFreeRefreshRequest struct {
+	AuthIndex      string `json:"auth_index"`
+	AuthIndexCamel string `json:"authIndex"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	FileName       string `json:"file_name"`
+	Email          string `json:"email"`
+}
+
 var (
 	codexFreeRefreshTasks   = make(map[string]*codexFreeRefreshTask)
 	codexFreeRefreshTasksMu sync.Mutex
@@ -3213,6 +3222,67 @@ func isCodexFreePlanAuth(auth *coreauth.Auth) bool {
 	return strings.EqualFold(strings.TrimSpace(auth.Attributes["plan_type"]), "free")
 }
 
+func codexRefreshSelectorValue(req codexFreeRefreshRequest) string {
+	for _, value := range []string{req.AuthIndex, req.AuthIndexCamel, req.ID, req.Name, req.FileName, req.Email} {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func authMatchesCodexRefreshSelector(auth *coreauth.Auth, selector string) bool {
+	if auth == nil || selector == "" {
+		return false
+	}
+	auth.EnsureIndex()
+	candidates := []string{
+		auth.Index,
+		auth.ID,
+		auth.FileName,
+		filepath.Base(auth.FileName),
+		auth.Label,
+		authEmail(auth),
+	}
+	for _, candidate := range candidates {
+		if strings.EqualFold(strings.TrimSpace(candidate), selector) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) selectCodexRefreshTarget(selector string) (*coreauth.Auth, int, string) {
+	if h == nil || h.authManager == nil {
+		return nil, http.StatusInternalServerError, "handler not initialized"
+	}
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return nil, http.StatusBadRequest, "missing auth selector"
+	}
+	matches := make([]*coreauth.Auth, 0, 1)
+	for _, auth := range h.authManager.List() {
+		if !authMatchesCodexRefreshSelector(auth, selector) {
+			continue
+		}
+		matches = append(matches, auth)
+	}
+	if len(matches) == 0 {
+		return nil, http.StatusNotFound, "auth not found"
+	}
+	if len(matches) > 1 {
+		return nil, http.StatusBadRequest, "auth selector is ambiguous"
+	}
+	auth := matches[0]
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return nil, http.StatusBadRequest, "auth is not codex"
+	}
+	if auth.Disabled || auth.Status == coreauth.StatusDisabled {
+		return nil, http.StatusBadRequest, "auth is disabled"
+	}
+	return auth, http.StatusOK, ""
+}
+
 // RefreshCodexFreeAccounts starts a background task that sends a minimal chat
 // request to each Codex free-plan account in sequence, with random delays
 // between accounts to avoid triggering risk control.
@@ -3222,16 +3292,34 @@ func (h *Handler) RefreshCodexFreeAccounts(c *gin.Context) {
 		return
 	}
 
-	auths := h.authManager.List()
-	var targets []*coreauth.Auth
-	for _, a := range auths {
-		if isCodexFreePlanAuth(a) && !a.Disabled {
-			targets = append(targets, a)
+	var body codexFreeRefreshRequest
+	if c.Request != nil && c.Request.Body != nil {
+		if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil && !errors.Is(errBindJSON, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
 		}
 	}
-	if len(targets) == 0 {
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "message": "no free codex accounts found", "total": 0})
-		return
+
+	selector := codexRefreshSelectorValue(body)
+	var targets []*coreauth.Auth
+	if selector != "" {
+		target, statusCode, errMsg := h.selectCodexRefreshTarget(selector)
+		if errMsg != "" {
+			c.JSON(statusCode, gin.H{"error": errMsg})
+			return
+		}
+		targets = append(targets, target)
+	} else {
+		auths := h.authManager.List()
+		for _, a := range auths {
+			if isCodexFreePlanAuth(a) && !a.Disabled && a.Status != coreauth.StatusDisabled {
+				targets = append(targets, a)
+			}
+		}
+		if len(targets) == 0 {
+			c.JSON(http.StatusOK, gin.H{"status": "ok", "message": "no free codex accounts found", "total": 0})
+			return
+		}
 	}
 
 	codexFreeRefreshTasksMu.Lock()

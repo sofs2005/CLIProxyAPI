@@ -779,7 +779,6 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 
 	patched := injectModelPriceDropdownClipPatch(data)
 	patched = injectCodexFreeRefreshPatch(patched)
-	patched = injectManagementKeyMeta(patched, c)
 
 	etag := fmt.Sprintf(`"%x"`, sha256.Sum256(patched))
 	c.Header("ETag", etag)
@@ -1183,72 +1182,8 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     return "/v0/management";
   }
 
-  // --- fetch interceptor: capture management key from panel's own requests ---
-  var _capturedMgmtKey = null;
-  (function () {
-    try {
-      var origFetch = window.fetch;
-      if (!origFetch) return;
-      window.fetch = function (input, init) {
-        try {
-          var url = typeof input === "string" ? input : (input && input.url) || "";
-          if (url.indexOf("/v0/management") !== -1 && !_capturedMgmtKey) {
-            var hdrs = (init && init.headers) || (input && input.headers) || {};
-            var k = "";
-            if (typeof hdrs.get === "function") {
-              k = hdrs.get("X-Management-Key") || hdrs.get("x-management-key") || "";
-              if (!k) {
-                var auth = hdrs.get("Authorization") || hdrs.get("authorization") || "";
-                if (auth.toLowerCase().indexOf("bearer ") === 0) k = auth.substring(7).trim();
-              }
-            } else if (typeof hdrs === "object") {
-              k = hdrs["X-Management-Key"] || hdrs["x-management-key"] || "";
-              if (!k) {
-                var a = hdrs["Authorization"] || hdrs["authorization"] || "";
-                if (a.toLowerCase().indexOf("bearer ") === 0) k = a.substring(7).trim();
-              }
-            }
-            if (k) _capturedMgmtKey = k.trim();
-          }
-        } catch (e) {}
-        return origFetch.apply(this, arguments);
-      };
-      // Probe: trigger panel's global interceptor to attach key, then capture it
-      setTimeout(function () {
-        if (_capturedMgmtKey) return;
-        try {
-          origFetch(getMgmtBase() + "/config", { method: "GET", credentials: "same-origin" }).catch(function () {});
-        } catch (e) {}
-      }, 100);
-    } catch (e) {}
-  })();
-
-  function getCapturedKey() {
-    if (_capturedMgmtKey) return _capturedMgmtKey;
-    // Priority 1: read from server-injected meta tag
-    try {
-      var meta = document.querySelector("meta[name='management-key']");
-      if (meta && meta.content) { _capturedMgmtKey = meta.content.trim(); return _capturedMgmtKey; }
-    } catch (e) {}
-    // Priority 2: read from sessionStorage cache
-    try {
-      var s = window.sessionStorage.getItem("cpa_codex_free_refresh_management_key");
-      if (s) { _capturedMgmtKey = s; return s; }
-    } catch (e) {}
-    return "";
-  }
-
-  function apiHeaders(status) {
-    var key = getCapturedKey();
-    if (!key) {
-      if (status) status.textContent = "Waiting for panel to authenticate… please visit any other tab first, then come back.";
-      return null;
-    }
-    return {
-      "Content-Type": "application/json",
-      "X-Management-Key": key,
-      "Authorization": "Bearer " + key
-    };
+  function apiHeaders() {
+    return { "Content-Type": "application/json" };
   }
 
   function startRefresh() {
@@ -1267,7 +1202,10 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     }
 
     fetch(getMgmtBase() + "/codex-free-refresh", { method: "POST", headers: headers })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
       .then(function (data) {
         if (data.error) {
           status.textContent = "Error: " + data.error;
@@ -1297,6 +1235,12 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     if (!btn || !status) return;
 
     var interval = setInterval(function () {
+      btn = document.getElementById("codex-free-refresh-btn");
+      status = document.getElementById("codex-free-refresh-status");
+      if (!btn || !status) {
+        clearInterval(interval);
+        return;
+      }
       var headers = apiHeaders(status);
       if (!headers) {
         clearInterval(interval);
@@ -1305,7 +1249,10 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
         return;
       }
       fetch(getMgmtBase() + "/codex-free-refresh/" + encodeURIComponent(taskId), { headers: headers })
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
         .then(function (data) {
           if (data.error) {
             clearInterval(interval);
@@ -1341,6 +1288,270 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     }, 2000);
   }
 
+  var authFilesCache = null;
+  var authFilesCacheAt = 0;
+  var authFilesPending = null;
+
+  function normalizeValue(value) {
+    return String(value == null ? "" : value).toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  function isCodexAuthFile(file) {
+    if (!file) return false;
+    return normalizeValue(file.provider) === "codex" || normalizeValue(file.type) === "codex";
+  }
+
+  function getAuthFiles(status) {
+    var now = Date.now();
+    if (authFilesCache && now - authFilesCacheAt < 10000) return Promise.resolve(authFilesCache);
+    if (authFilesPending) return authFilesPending;
+    var headers = apiHeaders(status);
+    if (!headers) return Promise.resolve([]);
+    authFilesPending = fetch(getMgmtBase() + "/auth-files", { headers: headers })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        var files = data && data.files && data.files.slice ? data.files : [];
+        authFilesCache = files;
+        authFilesCacheAt = Date.now();
+        authFilesPending = null;
+        return files;
+      })
+      .catch(function (err) {
+        authFilesPending = null;
+        if (status) status.textContent = "Auth files request failed: " + err;
+        return authFilesCache || [];
+      });
+    return authFilesPending;
+  }
+
+  function fileMatchValues(file) {
+    var keys = ["auth_index", "name", "email", "label", "account", "id", "project_id"];
+    var values = [];
+    for (var i = 0; i < keys.length; i++) {
+      var value = normalizeValue(file && file[keys[i]]);
+      if (value && value.length >= 3) values.push(value);
+    }
+    return values;
+  }
+
+  function isVisibleElement(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    var rect = el.getBoundingClientRect();
+    if (!rect || rect.width === 0 || rect.height === 0) return false;
+    var style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    return !(style && (style.display === "none" || style.visibility === "hidden"));
+  }
+
+  function rowMatchesAuthFile(row, file) {
+    if (!row || !file || !isVisibleElement(row)) return false;
+    var text = normalizeValue(row.innerText || row.textContent || "");
+    if (!text || text.length > 5000) return false;
+    var provider = normalizeValue(file.provider || file.type);
+    if (provider && text.indexOf(provider) === -1 && text.indexOf("codex") === -1) return false;
+    var values = fileMatchValues(file);
+    for (var i = 0; i < values.length; i++) {
+      if (text.indexOf(values[i]) !== -1) return true;
+    }
+    return false;
+  }
+
+  function candidateAuthRows() {
+    var selectors = ["tr", "[role='row']", "li", "article", "section", ".card", ".panel", "[class*='card']", "[class*='row']", "[class*='item']"];
+    var seen = [];
+    var rows = [];
+    var section = findAuthSection();
+    var scope = section || document;
+    for (var i = 0; i < selectors.length; i++) {
+      var nodes = scope.querySelectorAll(selectors[i]);
+      for (var j = 0; j < nodes.length; j++) {
+        var node = nodes[j];
+        if (seen.indexOf(node) !== -1 || node.id === "codex-free-refresh-wrapper") continue;
+        seen.push(node);
+        if (isVisibleElement(node)) rows.push(node);
+      }
+    }
+    return rows;
+  }
+
+  function findRowForAuthFile(file, rows, used) {
+    var best = null;
+    var bestArea = Infinity;
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (used.indexOf(row) !== -1 || !rowMatchesAuthFile(row, file)) continue;
+      var rect = row.getBoundingClientRect();
+      var area = rect.width * rect.height;
+      if (area > 0 && area < bestArea) {
+        best = row;
+        bestArea = area;
+      }
+    }
+    return best;
+  }
+
+  function singleStatusText(data) {
+    if (!data) return "Waiting...";
+    var lines = [];
+    lines.push("Progress: " + (data.done || 0) + "/" + (data.total || 1) + " | Success: " + (data.success || 0) + " | Failed: " + (data.failed || 0));
+    if (data.results && data.results.length > 0) {
+      for (var i = 0; i < data.results.length; i++) {
+        var r = data.results[i];
+        var icon = r.success ? "✓" : "✗";
+        var detail = r.success ? "" : " (" + (r.error || "unknown") + ")";
+        lines.push(icon + " " + (r.email || r.name || "?") + detail);
+      }
+    }
+    return lines.join("\n");
+  }
+
+  function pollSingleStatus(taskId, btn, status) {
+    var interval = setInterval(function () {
+      if (!document.body.contains(btn) || !document.body.contains(status)) {
+        clearInterval(interval);
+        return;
+      }
+      var headers = apiHeaders(status);
+      if (!headers) {
+        clearInterval(interval);
+        btn.disabled = false;
+        btn.textContent = "Refresh";
+        return;
+      }
+      fetch(getMgmtBase() + "/codex-free-refresh/" + encodeURIComponent(taskId), { headers: headers })
+        .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
+        .then(function (data) {
+          if (data.error) {
+            clearInterval(interval);
+            status.textContent = "Error: " + data.error;
+            btn.disabled = false;
+            btn.textContent = "Refresh";
+            return;
+          }
+          status.textContent = singleStatusText(data);
+          if (data.status === "completed") {
+            clearInterval(interval);
+            btn.disabled = false;
+            btn.textContent = "Refresh";
+          }
+        })
+        .catch(function (err) {
+          clearInterval(interval);
+          status.textContent = "Poll failed: " + err;
+          btn.disabled = false;
+          btn.textContent = "Refresh";
+        });
+    }, 2000);
+  }
+
+  function startSingleRefresh(file, btn, status) {
+    if (!file || !file.auth_index || !btn || !status) return;
+    btn.disabled = true;
+    btn.textContent = "Starting...";
+    status.textContent = "";
+    var headers = apiHeaders(status);
+    if (!headers) {
+      btn.disabled = false;
+      btn.textContent = "Refresh";
+      return;
+    }
+    fetch(getMgmtBase() + "/codex-free-refresh", {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ auth_index: file.auth_index })
+    })
+      .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
+      .then(function (data) {
+        if (data.error) {
+          status.textContent = "Error: " + data.error;
+          btn.disabled = false;
+          btn.textContent = "Refresh";
+          return;
+        }
+        if (!data.task_id) {
+          status.textContent = "No refresh task was started.";
+          btn.disabled = false;
+          btn.textContent = "Refresh";
+          return;
+        }
+        status.textContent = "Started. Polling...";
+        pollSingleStatus(data.task_id, btn, status);
+      })
+      .catch(function (err) {
+        status.textContent = "Request failed: " + err;
+        btn.disabled = false;
+        btn.textContent = "Refresh";
+      });
+  }
+
+  function createSingleRefreshButton(file, status) {
+    var btn = document.createElement("button");
+    btn.className = "codex-single-refresh-btn";
+    btn.type = "button";
+    btn.textContent = "Refresh";
+    btn.style.cssText = "margin:4px;padding:3px 8px;border:1px solid #475569;border-radius:5px;background:#1e293b;color:#e2e8f0;cursor:pointer;font-size:12px;line-height:1.2;";
+    btn.onmouseenter = function () { if (!btn.disabled) btn.style.background = "#334155"; };
+    btn.onmouseleave = function () { btn.style.background = "#1e293b"; };
+    btn.onclick = function (event) {
+      if (event && event.preventDefault) event.preventDefault();
+      if (event && event.stopPropagation) event.stopPropagation();
+      startSingleRefresh(file, btn, status);
+    };
+    return btn;
+  }
+
+  function attachSingleRefresh(row, file) {
+    if (!row || !file || !file.auth_index) return false;
+    var existing = row.querySelector ? row.querySelector(".codex-single-refresh-wrapper[data-auth-index='" + String(file.auth_index).replace(/'/g, "\\'") + "']") : null;
+    if (existing) return false;
+    var holder = document.createElement("span");
+    holder.className = "codex-single-refresh-wrapper";
+    holder.style.cssText = "display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;margin-left:4px;";
+    holder.setAttribute("data-auth-index", file.auth_index);
+    var status = document.createElement("span");
+    status.className = "codex-single-refresh-status";
+    status.style.cssText = "font-size:11px;color:#94a3b8;white-space:pre-wrap;margin-left:2px;";
+    var btn = createSingleRefreshButton(file, status);
+    btn.setAttribute("data-auth-index", file.auth_index);
+    holder.appendChild(btn);
+    holder.appendChild(status);
+    if (row.tagName && row.tagName.toLowerCase() === "tr") {
+      var cell = document.createElement("td");
+      cell.appendChild(holder);
+      row.appendChild(cell);
+    } else {
+      row.appendChild(holder);
+    }
+    return true;
+  }
+
+  function injectSingleRefreshButtons() {
+    if (!isAuthRoute()) return;
+    var status = document.getElementById("codex-free-refresh-status");
+    getAuthFiles(status).then(function (files) {
+      var codexFiles = [];
+      for (var i = 0; i < files.length; i++) {
+        if (isCodexAuthFile(files[i]) && files[i].auth_index) codexFiles.push(files[i]);
+      }
+      if (codexFiles.length === 0) return;
+      var rows = candidateAuthRows();
+      var used = [];
+      for (var j = 0; j < codexFiles.length; j++) {
+        var row = findRowForAuthFile(codexFiles[j], rows, used);
+        if (!row) continue;
+        if (attachSingleRefresh(row, codexFiles[j])) used.push(row);
+      }
+    });
+  }
+
   function injectUI() {
     if (!isAuthRoute()) return;
     if (document.getElementById("codex-free-refresh-btn")) return;
@@ -1354,23 +1565,57 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     wrapper.appendChild(createButton());
     wrapper.appendChild(createStatusEl());
     target.insertBefore(wrapper, target.firstChild);
+    injectSingleRefreshButtons();
   }
 
   var observer = null;
+  var scheduled = false;
+
+  function stopObserver() {
+    if (!observer) return;
+    observer.disconnect();
+    observer = null;
+  }
+
+  function scheduleAuthPatch() {
+    if (!isAuthRoute()) {
+      stopObserver();
+      return;
+    }
+    if (scheduled) return;
+    scheduled = true;
+    setTimeout(function () {
+      scheduled = false;
+      if (!isAuthRoute()) {
+        stopObserver();
+        return;
+      }
+      injectUI();
+      injectSingleRefreshButtons();
+    }, 80);
+  }
+
   function setupObserver() {
+    if (!isAuthRoute()) {
+      stopObserver();
+      return;
+    }
     if (observer || !window.MutationObserver || !document.body) return;
     observer = new MutationObserver(function () {
-      if (isAuthRoute()) injectUI();
+      scheduleAuthPatch();
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
   function handleRouteChange() {
-    if (isAuthRoute()) {
-      setupObserver();
-      setTimeout(injectUI, 300);
-      setTimeout(injectUI, 1200);
+    if (!isAuthRoute()) {
+      stopObserver();
+      return;
     }
+    setupObserver();
+    scheduleAuthPatch();
+    setTimeout(scheduleAuthPatch, 300);
+    setTimeout(scheduleAuthPatch, 1200);
   }
 
   window.addEventListener("hashchange", handleRouteChange, true);
@@ -1394,49 +1639,6 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
 		return out
 	}
 	return append(html, patch...)
-}
-
-// injectManagementKeyMeta inserts a <meta> tag containing the verified management key
-// so that injected client-side scripts can authenticate without prompting the user.
-func injectManagementKeyMeta(html []byte, c *gin.Context) []byte {
-	if c == nil {
-		return html
-	}
-	key := ""
-	if ah := c.GetHeader("Authorization"); ah != "" {
-		parts := strings.SplitN(ah, " ", 2)
-		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
-			key = strings.TrimSpace(parts[1])
-		}
-	}
-	if key == "" {
-		key = strings.TrimSpace(c.GetHeader("X-Management-Key"))
-	}
-	if key == "" {
-		return html
-	}
-	meta := fmt.Sprintf(`<meta name="management-key" content="%s">`, key)
-	lower := bytes.ToLower(html)
-	headClose := []byte("</head>")
-	if idx := bytes.Index(lower, headClose); idx >= 0 {
-		out := make([]byte, 0, len(html)+len(meta))
-		out = append(out, html[:idx]...)
-		out = append(out, []byte(meta)...)
-		out = append(out, html[idx:]...)
-		return out
-	}
-	bodyOpen := []byte("<body")
-	if idx := bytes.Index(lower, bodyOpen); idx >= 0 {
-		out := make([]byte, 0, len(html)+len(meta)+1)
-		out = append(out, html[:idx]...)
-		out = append(out, []byte(meta+"\n")...)
-		out = append(out, html[idx:]...)
-		return out
-	}
-	out := make([]byte, 0, len(html)+len(meta)+1)
-	out = append(out, []byte(meta+"\n")...)
-	out = append(out, html...)
-	return out
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {
