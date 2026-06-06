@@ -3411,13 +3411,17 @@ func (h *Handler) runCodexFreeRefresh(taskID string, task *codexFreeRefreshTask,
 	}
 }
 
+func minimalCodexRefreshPayload() []byte {
+	return []byte(`{"model":"gpt-5.4-mini","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true,"store":false,"instructions":""}`)
+}
+
 // pingCodexAccount sends a minimal chat request to activate the account cycle.
 // It reuses the existing CodexExecutor to ensure all headers, token resolution,
 // proxy transport, and request body formatting are identical to normal requests.
 func (h *Handler) pingCodexAccount(auth *coreauth.Auth) error {
 	executor := codexexecutor.NewCodexExecutor(h.cfg)
 
-	minimalPayload := []byte(`{"model":"gpt-5.4-mini","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true,"instructions":""}`)
+	minimalPayload := minimalCodexRefreshPayload()
 
 	req := cliproxyexecutor.Request{
 		Model:   "gpt-5.4-mini",
