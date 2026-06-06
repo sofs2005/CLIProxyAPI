@@ -38,6 +38,7 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 const managementSessionCookieName = "cpa_management_session"
 const managementSessionTTL = 12 * time.Hour
+const codexRefreshActionTokenTTL = 30 * time.Minute
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
@@ -162,6 +163,78 @@ func (h *Handler) managementSessionSecret() string {
 	return ""
 }
 
+func (h *Handler) SignCodexRefreshActionToken() string {
+	if h == nil {
+		return ""
+	}
+	expires := time.Now().Add(codexRefreshActionTokenTTL).Unix()
+	return h.signScopedActionToken("codex-refresh", expires)
+}
+
+func (h *Handler) signScopedActionToken(scope string, expires int64) string {
+	secret := h.managementSessionSecret()
+	scope = strings.TrimSpace(scope)
+	if secret == "" || scope == "" || expires <= 0 {
+		return ""
+	}
+	payload := fmt.Sprintf("%s:%d", scope, expires)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(payload))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString([]byte(payload + ":" + sig))
+}
+
+func (h *Handler) verifyScopedActionToken(scope, token string) bool {
+	if h == nil || strings.TrimSpace(scope) == "" || token == "" {
+		return false
+	}
+	raw, errDecode := base64.RawURLEncoding.DecodeString(token)
+	if errDecode != nil {
+		return false
+	}
+	parts := strings.Split(string(raw), ":")
+	if len(parts) != 3 || parts[0] != scope {
+		return false
+	}
+	expires, errParse := strconv.ParseInt(parts[1], 10, 64)
+	if errParse != nil || time.Now().Unix() > expires {
+		return false
+	}
+	expected := h.signScopedActionToken(scope, expires)
+	if expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
+}
+
+func codexRefreshActionTokenFromRequest(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	if token := strings.TrimSpace(c.GetHeader("X-Codex-Refresh-Token")); token != "" {
+		return token
+	}
+	return strings.TrimSpace(c.Query("codex_refresh_token"))
+}
+
+func isCodexRefreshActionPath(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	path := strings.TrimSpace(c.Request.URL.Path)
+	method := c.Request.Method
+	if path == "/v0/management/codex-refresh-auth-files" && method == http.MethodGet {
+		return true
+	}
+	if path == "/v0/management/codex-free-refresh" && method == http.MethodPost {
+		return true
+	}
+	if strings.HasPrefix(path, "/v0/management/codex-free-refresh/") && method == http.MethodGet {
+		return true
+	}
+	return false
+}
+
 func (h *Handler) signManagementSession(clientIP string, expires int64) string {
 	secret := h.managementSessionSecret()
 	if secret == "" || clientIP == "" || expires <= 0 {
@@ -262,6 +335,11 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 
 		clientIP := c.ClientIP()
 		localClient := clientIP == "127.0.0.1" || clientIP == "::1"
+
+		if isCodexRefreshActionPath(c) && h.verifyScopedActionToken("codex-refresh", codexRefreshActionTokenFromRequest(c)) {
+			c.Next()
+			return
+		}
 
 		// Accept either Authorization: Bearer <key> or X-Management-Key
 		var provided string

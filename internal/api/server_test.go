@@ -634,6 +634,42 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 	}
 }
 
+func TestCodexRefreshActionTokenAuthorizesScopedEndpoints(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+	server := newTestServer(t)
+	if server.mgmt == nil {
+		t.Fatal("expected management handler")
+	}
+
+	missingReq := httptest.NewRequest(http.MethodGet, "/v0/management/codex-refresh-auth-files", nil)
+	missingRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(missingRR, missingReq)
+	if missingRR.Code != http.StatusUnauthorized {
+		t.Fatalf("missing token status = %d, want %d body=%s", missingRR.Code, http.StatusUnauthorized, missingRR.Body.String())
+	}
+
+	token := server.mgmt.SignCodexRefreshActionToken()
+	if token == "" {
+		t.Fatal("expected non-empty codex refresh token")
+	}
+
+	authFilesReq := httptest.NewRequest(http.MethodGet, "/v0/management/codex-refresh-auth-files", nil)
+	authFilesReq.Header.Set("X-Codex-Refresh-Token", token)
+	authFilesRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(authFilesRR, authFilesReq)
+	if authFilesRR.Code != http.StatusOK {
+		t.Fatalf("scoped auth-files status = %d body=%s", authFilesRR.Code, authFilesRR.Body.String())
+	}
+
+	configReq := httptest.NewRequest(http.MethodGet, "/v0/management/config", nil)
+	configReq.Header.Set("X-Codex-Refresh-Token", token)
+	configRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(configRR, configReq)
+	if configRR.Code != http.StatusUnauthorized {
+		t.Fatalf("scoped token should not authorize config endpoint, got status = %d body=%s", configRR.Code, configRR.Body.String())
+	}
+}
+
 func TestServeManagementControlPanel_IssuesSessionCookieForInjectedAPIs(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 	server := newTestServer(t)
@@ -716,8 +752,8 @@ func TestServeManagementControlPanel_DisablesCaching(t *testing.T) {
 	if strings.Contains(body, "sessionStorage") || strings.Contains(body, "localStorage") || strings.Contains(body, "meta[name") || strings.Contains(body, `name="management-key"`) {
 		t.Fatalf("expected codex refresh patch not to expose management auth material via DOM or browser storage, got %s", body)
 	}
-	if !strings.Contains(body, "captureMgmtHeaders") || !strings.Contains(body, "X-Management-Key") {
-		t.Fatalf("expected codex refresh patch to capture management auth headers in memory, got %s", body)
+	if !strings.Contains(body, "X-Codex-Refresh-Token") || strings.Contains(body, "captureMgmtHeaders") || strings.Contains(body, "X-Management-Key") {
+		t.Fatalf("expected codex refresh patch to use only scoped action token auth, got %s", body)
 	}
 	if !strings.Contains(body, "auth_index") || !strings.Contains(body, "codex-single-refresh-btn") {
 		t.Fatalf("expected codex single refresh patch code in management response, got %s", body)

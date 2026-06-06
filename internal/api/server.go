@@ -705,6 +705,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/oauth-model-alias", s.mgmt.DeleteOAuthModelAlias)
 
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
+		mgmt.GET("/codex-refresh-auth-files", s.mgmt.ListCodexRefreshAuthFiles)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
@@ -777,8 +778,12 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		return
 	}
 
+	codexRefreshToken := ""
+	if s.mgmt != nil {
+		codexRefreshToken = s.mgmt.SignCodexRefreshActionToken()
+	}
 	patched := injectModelPriceDropdownClipPatch(data)
-	patched = injectCodexFreeRefreshPatch(patched)
+	patched = injectCodexFreeRefreshPatch(patched, codexRefreshToken)
 	if s.mgmt != nil {
 		s.mgmt.TryIssueSessionCookie(c)
 	}
@@ -1124,7 +1129,7 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
 	return append(html, patch...)
 }
 
-func injectCodexFreeRefreshPatch(html []byte) []byte {
+func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
 	const marker = "__cpa_codex_free_refresh_patch__"
 	if len(html) == 0 || bytes.Contains(html, []byte(marker)) {
 		return html
@@ -1135,6 +1140,7 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
   var MARKER = "__cpa_codex_free_refresh_patch__";
   if (window[MARKER]) return;
   window[MARKER] = true;
+  var CODEX_REFRESH_TOKEN = "__CPA_CODEX_REFRESH_TOKEN__";
 
   function normalizeText(value) {
     return String(value == null ? "" : value).toLowerCase().replace(/\s+/g, " ").trim();
@@ -1202,63 +1208,11 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
     return "/v0/management";
   }
 
-  var capturedMgmtHeaders = null;
-
-  function captureMgmtHeaders(input, init) {
-    try {
-      var url = typeof input === "string" ? input : (input && input.url) || "";
-      if (url.indexOf("/v0/management") === -1 || capturedMgmtHeaders) return;
-      var hdrs = (init && init.headers) || (input && input.headers) || {};
-      var headers = {};
-      var mgmtKey = "";
-      var auth = "";
-      if (typeof hdrs.get === "function") {
-        mgmtKey = hdrs.get("X-Management-Key") || hdrs.get("x-management-key") || "";
-        auth = hdrs.get("Authorization") || hdrs.get("authorization") || "";
-      } else if (Array.isArray(hdrs)) {
-        for (var i = 0; i < hdrs.length; i++) {
-          var name = String(hdrs[i][0] || "").toLowerCase();
-          var value = String(hdrs[i][1] || "");
-          if (name === "x-management-key") mgmtKey = value;
-          if (name === "authorization") auth = value;
-        }
-      } else if (typeof hdrs === "object") {
-        mgmtKey = hdrs["X-Management-Key"] || hdrs["x-management-key"] || "";
-        auth = hdrs["Authorization"] || hdrs["authorization"] || "";
-      }
-      if (mgmtKey) headers["X-Management-Key"] = String(mgmtKey).trim();
-      if (auth) headers["Authorization"] = String(auth).trim();
-      if (!headers["Authorization"] && headers["X-Management-Key"]) headers["Authorization"] = "Bearer " + headers["X-Management-Key"];
-      if (!headers["X-Management-Key"] && headers["Authorization"] && headers["Authorization"].toLowerCase().indexOf("bearer ") === 0) headers["X-Management-Key"] = headers["Authorization"].substring(7).trim();
-      if (headers["X-Management-Key"] || headers["Authorization"]) capturedMgmtHeaders = headers;
-    } catch (e) {}
-  }
-
-  (function () {
-    try {
-      var originalFetch = window.fetch;
-      if (!originalFetch || originalFetch.__cpa_codex_refresh_wrapped__) return;
-      var wrappedFetch = function (input, init) {
-        captureMgmtHeaders(input, init);
-        return originalFetch.apply(this, arguments);
-      };
-      wrappedFetch.__cpa_codex_refresh_wrapped__ = true;
-      window.fetch = wrappedFetch;
-      setTimeout(function () {
-        try {
-          if (!capturedMgmtHeaders) window.fetch(getMgmtBase() + "/config", { method: "GET", credentials: "same-origin" }).catch(function () {});
-        } catch (e) {}
-      }, 100);
-    } catch (e) {}
-  })();
-
   function apiHeaders(status) {
-    var headers = { "Content-Type": "application/json" };
-    if (capturedMgmtHeaders) {
-      if (capturedMgmtHeaders["X-Management-Key"]) headers["X-Management-Key"] = capturedMgmtHeaders["X-Management-Key"];
-      if (capturedMgmtHeaders["Authorization"]) headers["Authorization"] = capturedMgmtHeaders["Authorization"];
-    }
-    return headers;
+    return {
+      "Content-Type": "application/json",
+      "X-Codex-Refresh-Token": CODEX_REFRESH_TOKEN
+    };
   }
 
   function startRefresh() {
@@ -1387,7 +1341,7 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
   function fetchAuthFilesAttempt(status, attempt) {
     var headers = apiHeaders(status);
     if (!headers) return Promise.resolve([]);
-    return fetch(getMgmtBase() + "/auth-files", { headers: headers, credentials: "same-origin" })
+    return fetch(getMgmtBase() + "/codex-refresh-auth-files", { headers: headers, credentials: "same-origin" })
       .then(function (r) {
         if (r.status === 401 && attempt < 8) {
           return new Promise(function (resolve) {
@@ -1710,6 +1664,8 @@ func injectCodexFreeRefreshPatch(html []byte) []byte {
   }
 })();
 </script>`)
+
+	patch = bytes.ReplaceAll(patch, []byte("__CPA_CODEX_REFRESH_TOKEN__"), []byte(codexRefreshToken))
 
 	lower := bytes.ToLower(html)
 	bodyClose := []byte("</body>")
