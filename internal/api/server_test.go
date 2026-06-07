@@ -696,7 +696,7 @@ func TestCodexRefreshActionTokenAuthorizesScopedEndpoints(t *testing.T) {
 	}
 }
 
-func TestServeManagementControlPanel_IssuesSessionCookieForInjectedAPIs(t *testing.T) {
+func TestServeManagementControlPanel_CodexRefreshTokenRequiresManagementAuth(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 	server := newTestServer(t)
 
@@ -709,30 +709,76 @@ func TestServeManagementControlPanel_IssuesSessionCookieForInjectedAPIs(t *testi
 		t.Fatalf("failed to write management asset: %v", err)
 	}
 
+	unauthReq := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+	unauthRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(unauthRR, unauthReq)
+	if unauthRR.Code != http.StatusOK {
+		t.Fatalf("unauthenticated panel status = %d body=%s", unauthRR.Code, unauthRR.Body.String())
+	}
+	if !strings.Contains(unauthRR.Body.String(), `var CODEX_REFRESH_TOKEN = "";`) {
+		t.Fatalf("expected unauthenticated panel to contain an empty codex refresh token placeholder, got %s", unauthRR.Body.String())
+	}
+	if len(unauthRR.Result().Cookies()) != 0 {
+		t.Fatalf("expected unauthenticated panel not to issue cookies, got %+v", unauthRR.Result().Cookies())
+	}
+
 	panelReq := httptest.NewRequest(http.MethodGet, "/management.html", nil)
 	panelReq.Header.Set("Authorization", "Bearer test-management-key")
 	panelRR := httptest.NewRecorder()
 	server.engine.ServeHTTP(panelRR, panelReq)
 	if panelRR.Code != http.StatusOK {
-		t.Fatalf("panel status = %d body=%s", panelRR.Code, panelRR.Body.String())
+		t.Fatalf("authenticated panel status = %d body=%s", panelRR.Code, panelRR.Body.String())
+	}
+	if strings.Contains(panelRR.Body.String(), `var CODEX_REFRESH_TOKEN = "";`) {
+		t.Fatalf("expected authenticated panel to contain a non-empty codex refresh token")
 	}
 
-	var sessionCookie *http.Cookie
+	sessionCookies := make(map[string]*http.Cookie)
 	for _, cookie := range panelRR.Result().Cookies() {
 		if cookie.Name == "cpa_management_session" {
-			sessionCookie = cookie
-			break
+			sessionCookies[cookie.Path] = cookie
 		}
 	}
-	if sessionCookie == nil {
-		t.Fatalf("expected /management.html to issue management session cookie")
+	apiSessionCookie := sessionCookies["/v0/management"]
+	panelSessionCookie := sessionCookies["/management.html"]
+	if apiSessionCookie == nil {
+		t.Fatalf("expected /management.html to issue /v0/management session cookie")
 	}
-	if !sessionCookie.HttpOnly {
-		t.Fatalf("expected management session cookie to be HttpOnly")
+	if panelSessionCookie == nil {
+		t.Fatalf("expected /management.html to issue /management.html session cookie")
+	}
+	if apiSessionCookie.Value == "" || apiSessionCookie.Value != panelSessionCookie.Value {
+		t.Fatalf("expected management session cookies to have the same non-empty value")
+	}
+	if apiSessionCookie.HttpOnly != panelSessionCookie.HttpOnly || !apiSessionCookie.HttpOnly {
+		t.Fatalf("expected management session cookies to be HttpOnly")
+	}
+	if apiSessionCookie.SameSite != panelSessionCookie.SameSite || apiSessionCookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("expected management session cookies to use SameSite=Lax")
+	}
+	if apiSessionCookie.Secure != panelSessionCookie.Secure {
+		t.Fatalf("expected management session cookies to use matching Secure attributes")
+	}
+	if !apiSessionCookie.Expires.Equal(panelSessionCookie.Expires) {
+		t.Fatalf("expected management session cookies to use matching Expires attributes")
+	}
+	if apiSessionCookie.MaxAge != panelSessionCookie.MaxAge {
+		t.Fatalf("expected management session cookies to use matching MaxAge attributes")
+	}
+
+	sessionPanelReq := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+	sessionPanelReq.AddCookie(panelSessionCookie)
+	sessionPanelRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(sessionPanelRR, sessionPanelReq)
+	if sessionPanelRR.Code != http.StatusOK {
+		t.Fatalf("session panel status = %d body=%s", sessionPanelRR.Code, sessionPanelRR.Body.String())
+	}
+	if strings.Contains(sessionPanelRR.Body.String(), `var CODEX_REFRESH_TOKEN = "";`) {
+		t.Fatalf("expected session-authenticated panel to contain a non-empty codex refresh token")
 	}
 
 	authFilesReq := httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)
-	authFilesReq.AddCookie(sessionCookie)
+	authFilesReq.AddCookie(apiSessionCookie)
 	authFilesRR := httptest.NewRecorder()
 	server.engine.ServeHTTP(authFilesRR, authFilesReq)
 	if authFilesRR.Code != http.StatusOK {
@@ -790,8 +836,17 @@ func TestServeManagementControlPanel_DisablesCaching(t *testing.T) {
 	if !strings.Contains(body, "fetchAuthFilesAttempt") || !strings.Contains(body, "r.status === 401") {
 		t.Fatalf("expected codex refresh patch to retry auth-files after temporary 401, got %s", body)
 	}
-	if !strings.Contains(body, "auth files") || !strings.Contains(body, "data-state") || !strings.Contains(body, "setTimeout(scheduleAuthPatch, 2500)") || !strings.Contains(body, "replaceState") {
-		t.Fatalf("expected robust auth route detection in codex refresh patch, got %s", body)
+	if !strings.Contains(body, "decodeURIComponent") || !strings.Contains(body, "auth files") || !strings.Contains(body, "/auth") || !strings.Contains(body, "认证文件") || !strings.Contains(body, "凭证") {
+		t.Fatalf("expected URL-only auth route detection in codex refresh patch, got %s", body)
+	}
+	if strings.Contains(body, "[aria-current='page']") || strings.Contains(body, "[class*='active']") || strings.Contains(body, "[role='tab']") {
+		t.Fatalf("expected codex refresh patch not to scan active navigation selectors, got %s", body)
+	}
+	if !strings.Contains(body, "removeInjectedUI(); return") || !strings.Contains(body, "setTimeout(scheduleAuthPatch, 2500)") || !strings.Contains(body, "replaceState") {
+		t.Fatalf("expected codex refresh patch to clean up injected UI across route changes, got %s", body)
+	}
+	if !strings.Contains(body, "getAuthFiles(status).then(function (files) {\n      if (!isAuthRoute()) { removeInjectedUI(); return; }") {
+		t.Fatalf("expected codex single refresh injection to re-check auth route after async auth file load, got %s", body)
 	}
 	if strings.Contains(body, "__cpa_api_key_usage_dashboard_patch__") {
 		t.Fatalf("expected API key usage dashboard patch marker to be absent from management response, got %s", body)

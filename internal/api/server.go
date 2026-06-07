@@ -875,15 +875,16 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		return
 	}
 
-	codexRefreshToken := ""
+	fullyAuthenticated := false
 	if s.mgmt != nil {
+		fullyAuthenticated = s.mgmt.TryIssueSessionCookie(c)
+	}
+	codexRefreshToken := ""
+	if fullyAuthenticated {
 		codexRefreshToken = s.mgmt.SignCodexRefreshActionToken()
 	}
 	patched := injectModelPriceDropdownClipPatch(data)
 	patched = injectCodexFreeRefreshPatch(patched, codexRefreshToken)
-	if s.mgmt != nil {
-		s.mgmt.TryIssueSessionCookie(c)
-	}
 
 	etag := fmt.Sprintf(`"%x"`, sha256.Sum256(patched))
 	c.Header("ETag", etag)
@@ -1243,33 +1244,70 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     return String(value == null ? "" : value).toLowerCase().replace(/\s+/g, " ").trim();
   }
 
+  function decodeRoutePart(value) {
+    var text = String(value == null ? "" : value);
+    try {
+      return decodeURIComponent(text);
+    } catch (err) {
+      return text;
+    }
+  }
+
+  function normalizeRouteText(value) {
+    return normalizeText(decodeRoutePart(value)).replace(/[\-_]+/g, " ");
+  }
+
+  function routeHasToken(text, token) {
+    if (!text || !token) return false;
+    if (text.indexOf(token) === -1) return false;
+    if (token.charAt(0) === "/") return true;
+    var idx = text.indexOf(token);
+    while (idx !== -1) {
+      var before = idx === 0 ? "" : text.charAt(idx - 1);
+      var after = idx + token.length >= text.length ? "" : text.charAt(idx + token.length);
+      if ((!before || /[\s/#?&=.]/.test(before)) && (!after || /[\s/#?&=.]/.test(after))) return true;
+      idx = text.indexOf(token, idx + token.length);
+    }
+    return false;
+  }
+
   function isAuthRoute() {
-    var locationText = normalizeText((window.location.hash || "") + " " + (window.location.pathname || "") + " " + (window.location.search || ""));
-    if (locationText.indexOf("/auth") !== -1 || locationText.indexOf("auth-files") !== -1 || locationText.indexOf("auth files") !== -1 || locationText.indexOf("认证文件") !== -1 || locationText.indexOf("凭证") !== -1) {
-      return true;
+    var rawLocationText = (window.location.hash || "") + " " + (window.location.pathname || "") + " " + (window.location.search || "");
+    var locationText = normalizeRouteText(rawLocationText);
+    var routeTokens = ["auth files", "/auth", "认证文件", "凭证"];
+    for (var i = 0; i < routeTokens.length; i++) {
+      if (routeHasToken(locationText, normalizeRouteText(routeTokens[i]))) return true;
     }
-    var activeSelectors = ["[aria-current='page']", "[aria-selected='true']", "[data-state='active']", ".active", "[class*='active']", "[role='tab']"];
-    for (var i = 0; i < activeSelectors.length; i++) {
-      var nodes = document.querySelectorAll(activeSelectors[i]);
-      for (var j = 0; j < nodes.length; j++) {
-        var text = normalizeText(nodes[j].innerText || nodes[j].textContent || "");
-        if (text.indexOf("auth files") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1) {
-          return true;
-        }
-      }
+    return false;
+  }
+
+  function isLayoutChrome(node) {
+    var current = node;
+    for (var i = 0; i < 6 && current; i++) {
+      if (current.matches && current.matches("nav,aside,header,footer,[role='navigation'],[class*='sidebar'],[class*='menu']")) return true;
+      current = current.parentElement;
     }
-    return !!findAuthSection();
+    return false;
   }
 
   function findAuthSection() {
-    var selectors = ["main [class*='auth']", "main [id*='auth']", "main section", "main .card", "main .panel", "[role='main'] [class*='auth']", "[role='main'] [id*='auth']", "[role='main'] section", "[role='main'] .card", "[role='main'] .panel", "[class*='auth']", "[id*='auth']", "section", ".card", ".panel"];
-    for (var i = 0; i < selectors.length; i++) {
-      var nodes = document.querySelectorAll(selectors[i]);
-      for (var j = 0; j < nodes.length; j++) {
-        var text = (nodes[j].innerText || "").toLowerCase();
-        if ((text.indexOf("codex") !== -1 || text.indexOf("auth") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1) && (text.indexOf("auth") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1 || text.indexOf("provider") !== -1)) {
-          return nodes[j];
+    var roots = document.querySelectorAll("main,[role='main'],[class*='content'],[class*='page']");
+    if (!roots.length) return null;
+    var titleSelectors = "h1,h2,h3,[role='heading'],[data-page-title],[class*='title']";
+    for (var r = 0; r < roots.length; r++) {
+      var root = roots[r];
+      if (isLayoutChrome(root)) continue;
+      var titles = root.querySelectorAll(titleSelectors);
+      for (var i = 0; i < titles.length; i++) {
+        if (isLayoutChrome(titles[i])) continue;
+        var title = normalizeText(titles[i].innerText || titles[i].textContent || "");
+        if (title.indexOf("auth files") === -1 && title.indexOf("认证文件") === -1 && title.indexOf("凭证") === -1) continue;
+        var container = titles[i];
+        for (var depth = 0; depth < 5 && container && container !== root; depth++) {
+          if (container.matches && container.matches("section,article,.card,.panel,[class*='card'],[class*='panel'],[class*='page']")) break;
+          container = container.parentElement;
         }
+        return container || root;
       }
     }
     return null;
@@ -1673,6 +1711,7 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     if (!isAuthRoute()) return;
     var status = document.getElementById("codex-free-refresh-status");
     getAuthFiles(status).then(function (files) {
+      if (!isAuthRoute()) { removeInjectedUI(); return; }
       var codexFiles = [];
       for (var i = 0; i < files.length; i++) {
         if (isCodexAuthFile(files[i]) && files[i].auth_index) codexFiles.push(files[i]);
@@ -1688,8 +1727,17 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     });
   }
 
+  function removeInjectedUI() {
+    var wrapper = document.getElementById("codex-free-refresh-wrapper");
+    if (wrapper && wrapper.parentElement) wrapper.parentElement.removeChild(wrapper);
+    var singles = document.querySelectorAll(".codex-single-refresh-wrapper");
+    for (var i = 0; i < singles.length; i++) {
+      if (singles[i].parentElement) singles[i].parentElement.removeChild(singles[i]);
+    }
+  }
+
   function injectUI() {
-    if (!isAuthRoute()) return;
+    if (!isAuthRoute()) { removeInjectedUI(); return; }
     if (document.getElementById("codex-free-refresh-btn")) return;
 
     var section = findAuthSection();
@@ -1718,7 +1766,7 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     scheduled = true;
     setTimeout(function () {
       scheduled = false;
-      if (!isAuthRoute()) return;
+      if (!isAuthRoute()) { removeInjectedUI(); return; }
       injectUI();
       injectSingleRefreshButtons();
     }, 80);

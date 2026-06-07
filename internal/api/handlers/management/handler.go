@@ -291,12 +291,13 @@ func (h *Handler) verifyManagementSession(clientIP, token string) bool {
 	return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
 }
 
-// TryIssueSessionCookie verifies an optional management key on a non-management page
-// request and issues the HttpOnly management session cookie when the key is valid.
-// Missing keys are ignored so loading the control panel never increments failure counters.
-func (h *Handler) TryIssueSessionCookie(c *gin.Context) {
+// TryIssueSessionCookie verifies optional management authentication on a
+// non-management page request. It returns true only when the request already has
+// a valid management session or provides a valid management key. Missing keys are
+// ignored so loading the control panel never increments failure counters.
+func (h *Handler) TryIssueSessionCookie(c *gin.Context) bool {
 	if h == nil || c == nil || c.Request == nil {
-		return
+		return false
 	}
 	clientIP := c.ClientIP()
 	localClient := clientIP == "127.0.0.1" || clientIP == "::1"
@@ -310,15 +311,20 @@ func (h *Handler) TryIssueSessionCookie(c *gin.Context) {
 		}
 	}
 	if provided == "" {
+		if sessionCookie, errCookie := c.Cookie(managementSessionCookieName); errCookie == nil && h.verifyManagementSession(clientIP, sessionCookie) {
+			return true
+		}
 		provided = c.GetHeader("X-Management-Key")
 	}
 	if strings.TrimSpace(provided) == "" {
-		return
+		return false
 	}
 	allowed, _, _ := h.AuthenticateManagementKey(clientIP, localClient, provided)
 	if allowed {
 		h.setManagementSessionCookie(c, clientIP)
+		return true
 	}
+	return false
 }
 
 func (h *Handler) setManagementSessionCookie(c *gin.Context, clientIP string) {
@@ -330,16 +336,19 @@ func (h *Handler) setManagementSessionCookie(c *gin.Context, clientIP string) {
 	if token == "" {
 		return
 	}
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     managementSessionCookieName,
-		Value:    token,
-		Path:     "/v0/management",
-		Expires:  expires,
-		MaxAge:   int(managementSessionTTL.Seconds()),
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   c.Request != nil && c.Request.TLS != nil,
-	})
+	secure := c.Request != nil && c.Request.TLS != nil
+	for _, path := range []string{"/v0/management", "/management.html"} {
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     managementSessionCookieName,
+			Value:    token,
+			Path:     path,
+			Expires:  expires,
+			MaxAge:   int(managementSessionTTL.Seconds()),
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			Secure:   secure,
+		})
+	}
 }
 
 // Middleware enforces access control for management endpoints.
