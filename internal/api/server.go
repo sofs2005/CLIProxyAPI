@@ -1278,6 +1278,20 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     for (var i = 0; i < routeTokens.length; i++) {
       if (routeHasToken(locationText, normalizeRouteText(routeTokens[i]))) return true;
     }
+    return activeAuthRouteFromNavigation() || !!findAuthSection();
+  }
+
+  function activeAuthRouteFromNavigation() {
+    var selectors = ["[aria-current='page']", "[aria-selected='true']", "[role='tab'][aria-selected='true']", "nav [class*='active']", "aside [class*='active']", "[role='navigation'] [class*='active']"];
+    for (var i = 0; i < selectors.length; i++) {
+      var nodes = document.querySelectorAll(selectors[i]);
+      for (var j = 0; j < nodes.length; j++) {
+        var node = nodes[j];
+        if (!isLayoutChrome(node) && !(node.getAttribute && normalizeText(node.getAttribute("role")) === "tab")) continue;
+        var text = normalizeRouteText((node.innerText || node.textContent || "") + " " + (node.getAttribute ? (node.getAttribute("aria-label") || node.getAttribute("title") || "") : ""));
+        if (routeHasToken(text, "auth files") || routeHasToken(text, "认证文件") || routeHasToken(text, "凭证")) return true;
+      }
+    }
     return false;
   }
 

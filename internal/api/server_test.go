@@ -837,10 +837,10 @@ func TestServeManagementControlPanel_DisablesCaching(t *testing.T) {
 		t.Fatalf("expected codex refresh patch to retry auth-files after temporary 401, got %s", body)
 	}
 	if !strings.Contains(body, "decodeURIComponent") || !strings.Contains(body, "auth files") || !strings.Contains(body, "/auth") || !strings.Contains(body, "认证文件") || !strings.Contains(body, "凭证") {
-		t.Fatalf("expected URL-only auth route detection in codex refresh patch, got %s", body)
+		t.Fatalf("expected auth route detection tokens in codex refresh patch, got %s", body)
 	}
-	if strings.Contains(body, "[aria-current='page']") || strings.Contains(body, "[class*='active']") || strings.Contains(body, "[role='tab']") {
-		t.Fatalf("expected codex refresh patch not to scan active navigation selectors, got %s", body)
+	if !strings.Contains(body, "activeAuthRouteFromNavigation") || !strings.Contains(body, "[aria-current='page']") || !strings.Contains(body, "[aria-selected='true']") || !strings.Contains(body, "[role='tab']") {
+		t.Fatalf("expected codex refresh patch to recognize active Auth Files navigation when URL is generic, got %s", body)
 	}
 	if !strings.Contains(body, "removeInjectedUI(); return") || !strings.Contains(body, "setTimeout(scheduleAuthPatch, 2500)") || !strings.Contains(body, "replaceState") {
 		t.Fatalf("expected codex refresh patch to clean up injected UI across route changes, got %s", body)
