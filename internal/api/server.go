@@ -1282,7 +1282,7 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
   }
 
   function activeAuthRouteFromNavigation() {
-    var selectors = ["[aria-current='page']", "[aria-selected='true']", "[role='tab'][aria-selected='true']", "nav [class*='active']", "aside [class*='active']", "[role='navigation'] [class*='active']"];
+    var selectors = ["[aria-current='page']", "[aria-selected='true']", "[data-state='active']", "[role='tab']", "nav [class*='active']", "aside [class*='active']", "[role='navigation'] [class*='active']"];
     for (var i = 0; i < selectors.length; i++) {
       var nodes = document.querySelectorAll(selectors[i]);
       for (var j = 0; j < nodes.length; j++) {
@@ -1306,7 +1306,6 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
 
   function findAuthSection() {
     var roots = document.querySelectorAll("main,[role='main'],[class*='content'],[class*='page']");
-    if (!roots.length) return null;
     var titleSelectors = "h1,h2,h3,[role='heading'],[data-page-title],[class*='title']";
     for (var r = 0; r < roots.length; r++) {
       var root = roots[r];
@@ -1322,6 +1321,19 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
           container = container.parentElement;
         }
         return container || root;
+      }
+    }
+
+    var selectors = ["main [class*='auth']", "main [id*='auth']", "main section", "main .card", "main .panel", "[role='main'] [class*='auth']", "[role='main'] [id*='auth']", "[role='main'] section", "[role='main'] .card", "[role='main'] .panel", "[class*='auth']", "[id*='auth']", "section", ".card", ".panel"];
+    for (var s = 0; s < selectors.length; s++) {
+      var nodes = document.querySelectorAll(selectors[s]);
+      for (var j = 0; j < nodes.length; j++) {
+        var node = nodes[j];
+        if (isLayoutChrome(node)) continue;
+        var text = normalizeText(node.innerText || node.textContent || "");
+        if ((text.indexOf("codex") !== -1 || text.indexOf("auth") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1) && (text.indexOf("auth") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1 || text.indexOf("provider") !== -1)) {
+          return node;
+        }
       }
     }
     return null;

@@ -842,6 +842,9 @@ func TestServeManagementControlPanel_DisablesCaching(t *testing.T) {
 	if !strings.Contains(body, "activeAuthRouteFromNavigation") || !strings.Contains(body, "[aria-current='page']") || !strings.Contains(body, "[aria-selected='true']") || !strings.Contains(body, "[role='tab']") {
 		t.Fatalf("expected codex refresh patch to recognize active Auth Files navigation when URL is generic, got %s", body)
 	}
+	if !strings.Contains(body, "[data-state='active']") || !strings.Contains(body, "main [class*='auth']") || !strings.Contains(body, "main [id*='auth']") {
+		t.Fatalf("expected codex refresh patch to preserve known-good auth page fallbacks, got %s", body)
+	}
 	if !strings.Contains(body, "removeInjectedUI(); return") || !strings.Contains(body, "setTimeout(scheduleAuthPatch, 2500)") || !strings.Contains(body, "replaceState") {
 		t.Fatalf("expected codex refresh patch to clean up injected UI across route changes, got %s", body)
 	}
