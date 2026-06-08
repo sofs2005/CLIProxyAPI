@@ -874,6 +874,9 @@ func TestServeManagementControlPanel_DisablesCaching(t *testing.T) {
 	if !strings.Contains(body, "getAuthFiles(status).then(function (files) {\n      if (!isAuthRoute()) { removeInjectedUI(); return; }") {
 		t.Fatalf("expected codex single refresh injection to re-check auth route after async auth file load, got %s", body)
 	}
+	if !strings.Contains(body, "var scopes = section ? [section, document] : [document]") {
+		t.Fatalf("expected codex single refresh injection to search document when auth section is too narrow, got %s", body)
+	}
 	if strings.Contains(body, "__cpa_api_key_usage_dashboard_patch__") {
 		t.Fatalf("expected API key usage dashboard patch marker to be absent from management response, got %s", body)
 	}

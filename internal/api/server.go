@@ -1559,14 +1559,17 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     var seen = [];
     var rows = [];
     var section = findAuthSection();
-    var scope = section || document;
-    for (var i = 0; i < selectors.length; i++) {
-      var nodes = scope.querySelectorAll(selectors[i]);
-      for (var j = 0; j < nodes.length; j++) {
-        var node = nodes[j];
-        if (seen.indexOf(node) !== -1 || node.id === "codex-free-refresh-wrapper") continue;
-        seen.push(node);
-        if (isVisibleElement(node)) rows.push(node);
+    var scopes = section ? [section, document] : [document];
+    for (var scopeIndex = 0; scopeIndex < scopes.length; scopeIndex++) {
+      var scope = scopes[scopeIndex];
+      for (var i = 0; i < selectors.length; i++) {
+        var nodes = scope.querySelectorAll(selectors[i]);
+        for (var j = 0; j < nodes.length; j++) {
+          var node = nodes[j];
+          if (seen.indexOf(node) !== -1 || node.id === "codex-free-refresh-wrapper") continue;
+          seen.push(node);
+          if (isVisibleElement(node)) rows.push(node);
+        }
       }
     }
     return rows;
