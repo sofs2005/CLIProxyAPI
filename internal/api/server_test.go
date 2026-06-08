@@ -696,6 +696,21 @@ func TestCodexRefreshActionTokenAuthorizesScopedEndpoints(t *testing.T) {
 	}
 }
 
+func codexRefreshTokenFromPanelBody(t *testing.T, body string) string {
+	t.Helper()
+	prefix := `var CODEX_REFRESH_TOKEN = "`
+	start := strings.Index(body, prefix)
+	if start < 0 {
+		t.Fatalf("expected panel body to contain codex refresh token assignment, got %s", body)
+	}
+	start += len(prefix)
+	end := strings.Index(body[start:], `";`)
+	if end < 0 {
+		t.Fatalf("expected panel body to contain terminated codex refresh token assignment, got %s", body)
+	}
+	return body[start : start+end]
+}
+
 func TestServeManagementControlPanel_CodexRefreshTokenRequiresManagementAuth(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 	server := newTestServer(t)
@@ -715,8 +730,16 @@ func TestServeManagementControlPanel_CodexRefreshTokenRequiresManagementAuth(t *
 	if unauthRR.Code != http.StatusOK {
 		t.Fatalf("unauthenticated panel status = %d body=%s", unauthRR.Code, unauthRR.Body.String())
 	}
-	if !strings.Contains(unauthRR.Body.String(), `var CODEX_REFRESH_TOKEN = "";`) {
-		t.Fatalf("expected unauthenticated panel to contain an empty codex refresh token placeholder, got %s", unauthRR.Body.String())
+	unauthToken := codexRefreshTokenFromPanelBody(t, unauthRR.Body.String())
+	if unauthToken == "" {
+		t.Fatalf("expected panel to contain a scoped codex refresh token")
+	}
+	unauthAuthFilesReq := httptest.NewRequest(http.MethodGet, "/v0/management/codex-refresh-auth-files", nil)
+	unauthAuthFilesReq.Header.Set("X-Codex-Refresh-Token", unauthToken)
+	unauthAuthFilesRR := httptest.NewRecorder()
+	server.engine.ServeHTTP(unauthAuthFilesRR, unauthAuthFilesReq)
+	if unauthAuthFilesRR.Code != http.StatusOK {
+		t.Fatalf("panel scoped token auth-files status = %d body=%s", unauthAuthFilesRR.Code, unauthAuthFilesRR.Body.String())
 	}
 	if len(unauthRR.Result().Cookies()) != 0 {
 		t.Fatalf("expected unauthenticated panel not to issue cookies, got %+v", unauthRR.Result().Cookies())

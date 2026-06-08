@@ -875,13 +875,10 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		return
 	}
 
-	fullyAuthenticated := false
-	if s.mgmt != nil {
-		fullyAuthenticated = s.mgmt.TryIssueSessionCookie(c)
-	}
 	codexRefreshToken := ""
-	if fullyAuthenticated {
+	if s.mgmt != nil {
 		codexRefreshToken = s.mgmt.SignCodexRefreshActionToken()
+		s.mgmt.TryIssueSessionCookie(c)
 	}
 	patched := injectModelPriceDropdownClipPatch(data)
 	patched = injectCodexFreeRefreshPatch(patched, codexRefreshToken)
