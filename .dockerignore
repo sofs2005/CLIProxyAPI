@@ -1,6 +1,6 @@
 # Git and GitHub folders
-.git/*
-.github/*
+.git
+.github
 
 # Docker and CI/CD related files
 docker-compose.yml
@@ -10,7 +10,7 @@ docker-compose.yml
 Dockerfile
 
 # Documentation and license
-docs/*
+docs
 README.md
 README_CN.md
 LICENSE
@@ -23,16 +23,20 @@ data/*
 config.yaml
 
 # Development/editor
-bin/*
-.vscode/*
-.claude/*
-.codex/*
-.gemini/*
-.serena/*
-.agent/*
-.agents/*
-.opencode/*
-.idea/*
-.bmad/*
-_bmad/*
-_bmad-output/*
+bin
+.vscode
+.claude
+.codex
+.codex-worktrees
+.gemini
+.serena
+.agent
+.agents
+.antigravitycli
+.opencode
+.idea
+.junie
+.worktrees
+.bmad
+_bmad
+_bmad-output
