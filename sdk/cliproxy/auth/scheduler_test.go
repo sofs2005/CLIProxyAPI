@@ -647,13 +647,16 @@ func TestManagerPluginSchedulerFallsBackWhenUnhandledOrUnknown(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			manager := NewManager(nil, &FillFirstSelector{}, nil)
+			manager := NewManager(nil, &FillFirstSelector{seed: 42}, nil)
 			manager.executors["gemini"] = schedulerTestExecutor{}
-			if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-b", Provider: "gemini"}); errRegister != nil {
-				t.Fatalf("Register(auth-b) error = %v", errRegister)
+			auths := []*Auth{
+				{ID: "auth-b", Provider: "gemini"},
+				{ID: "auth-a", Provider: "gemini"},
 			}
-			if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-a", Provider: "gemini"}); errRegister != nil {
-				t.Fatalf("Register(auth-a) error = %v", errRegister)
+			for _, auth := range auths {
+				if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+					t.Fatalf("Register(%s) error = %v", auth.ID, errRegister)
+				}
 			}
 
 			scheduler := &fakePluginScheduler{resp: tc.resp, handled: tc.handled}
@@ -666,8 +669,9 @@ func TestManagerPluginSchedulerFallsBackWhenUnhandledOrUnknown(t *testing.T) {
 			if got == nil {
 				t.Fatalf("pickNext() auth = nil")
 			}
-			if got.ID != "auth-a" {
-				t.Fatalf("pickNext() auth.ID = %q, want %q", got.ID, "auth-a")
+			want := expectedFillFirstAuthID(42, auths)
+			if got.ID != want {
+				t.Fatalf("pickNext() auth.ID = %q, want %q", got.ID, want)
 			}
 		})
 	}
@@ -675,13 +679,16 @@ func TestManagerPluginSchedulerFallsBackWhenUnhandledOrUnknown(t *testing.T) {
 
 func TestManagerPluginSchedulerDelegatesBuiltin(t *testing.T) {
 	t.Run("round-robin", func(t *testing.T) {
-		manager := NewManager(nil, &FillFirstSelector{}, nil)
+		manager := NewManager(nil, &FillFirstSelector{seed: 42}, nil)
 		manager.executors["gemini"] = schedulerTestExecutor{}
-		if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-a", Provider: "gemini"}); errRegister != nil {
-			t.Fatalf("Register(auth-a) error = %v", errRegister)
+		auths := []*Auth{
+			{ID: "auth-a", Provider: "gemini"},
+			{ID: "auth-b", Provider: "gemini"},
 		}
-		if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-b", Provider: "gemini"}); errRegister != nil {
-			t.Fatalf("Register(auth-b) error = %v", errRegister)
+		for _, auth := range auths {
+			if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+				t.Fatalf("Register(%s) error = %v", auth.ID, errRegister)
+			}
 		}
 		manager.SetPluginScheduler(&fakePluginScheduler{
 			resp:    pluginapi.SchedulerPickResponse{Handled: true, DelegateBuiltin: pluginapi.SchedulerBuiltinRoundRobin},
@@ -699,8 +706,13 @@ func TestManagerPluginSchedulerDelegatesBuiltin(t *testing.T) {
 		if gotA == nil || gotB == nil {
 			t.Fatalf("pickNext() auths = %v, %v; want non-nil", gotA, gotB)
 		}
-		if gotA.ID != "auth-a" || gotB.ID != "auth-b" {
-			t.Fatalf("round-robin picks = %q, %q; want auth-a, auth-b", gotA.ID, gotB.ID)
+		wantFirst := expectedFillFirstAuthID(42, auths)
+		wantSecond := "auth-a"
+		if wantFirst == "auth-a" {
+			wantSecond = "auth-b"
+		}
+		if gotA.ID != wantFirst || gotB.ID != wantSecond {
+			t.Fatalf("round-robin picks = %q, %q; want %s, %s", gotA.ID, gotB.ID, wantFirst, wantSecond)
 		}
 	})
 
@@ -714,13 +726,16 @@ func TestManagerPluginSchedulerDelegatesBuiltin(t *testing.T) {
 			})
 		}
 
-		manager := NewManager(nil, &FillFirstSelector{}, nil)
+		manager := NewManager(nil, &FillFirstSelector{seed: 42}, nil)
 		manager.executors["gemini"] = schedulerTestExecutor{}
-		if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-a", Provider: "gemini"}); errRegister != nil {
-			t.Fatalf("Register(auth-a) error = %v", errRegister)
+		auths := []*Auth{
+			{ID: "auth-a", Provider: "gemini"},
+			{ID: "auth-b", Provider: "gemini"},
 		}
-		if _, errRegister := manager.Register(context.Background(), &Auth{ID: "auth-b", Provider: "gemini"}); errRegister != nil {
-			t.Fatalf("Register(auth-b) error = %v", errRegister)
+		for _, auth := range auths {
+			if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+				t.Fatalf("Register(%s) error = %v", auth.ID, errRegister)
+			}
 		}
 		manager.SetPluginScheduler(&fakePluginScheduler{
 			resp:    pluginapi.SchedulerPickResponse{Handled: true, DelegateBuiltin: pluginapi.SchedulerBuiltinRoundRobin},
@@ -738,8 +753,9 @@ func TestManagerPluginSchedulerDelegatesBuiltin(t *testing.T) {
 		if gotModelA == nil || gotModelB == nil {
 			t.Fatalf("pickNext() auths = %v, %v; want non-nil", gotModelA, gotModelB)
 		}
-		if gotModelA.ID != "auth-a" || gotModelB.ID != "auth-a" {
-			t.Fatalf("model-scoped round-robin picks = %q, %q; want auth-a, auth-a", gotModelA.ID, gotModelB.ID)
+		want := expectedFillFirstAuthID(42, auths)
+		if gotModelA.ID != want || gotModelB.ID != want {
+			t.Fatalf("model-scoped round-robin picks = %q, %q; want %s, %s", gotModelA.ID, gotModelB.ID, want, want)
 		}
 	})
 
@@ -771,14 +787,17 @@ func TestManagerPluginSchedulerDelegatesBuiltin(t *testing.T) {
 }
 
 func TestManagerPluginSchedulerDelegateRoundRobinUsesNativeMixedRotation(t *testing.T) {
-	manager := NewManager(nil, &FillFirstSelector{}, nil)
+	manager := NewManager(nil, &FillFirstSelector{seed: 42}, nil)
 	manager.executors["gemini"] = schedulerTestExecutor{}
 	manager.executors["claude"] = schedulerTestExecutor{}
-	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "gemini-a", Provider: "gemini"}); errRegister != nil {
-		t.Fatalf("Register(gemini-a) error = %v", errRegister)
+	geminiAuths := []*Auth{
+		{ID: "gemini-a", Provider: "gemini"},
+		{ID: "gemini-b", Provider: "gemini"},
 	}
-	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "gemini-b", Provider: "gemini"}); errRegister != nil {
-		t.Fatalf("Register(gemini-b) error = %v", errRegister)
+	for _, auth := range geminiAuths {
+		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+			t.Fatalf("Register(%s) error = %v", auth.ID, errRegister)
+		}
 	}
 	if _, errRegister := manager.Register(context.Background(), &Auth{ID: "claude-a", Provider: "claude"}); errRegister != nil {
 		t.Fatalf("Register(claude-a) error = %v", errRegister)

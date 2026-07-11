@@ -80,8 +80,10 @@ type scheduledAuth struct {
 
 // readyBucket keeps the ready views for one priority level.
 type readyBucket struct {
-	all readyView
-	ws  readyView
+	all          readyView
+	ws           readyView
+	fillFirstAll []*scheduledAuth
+	fillFirstWS  []*scheduledAuth
 }
 
 // readyView holds the selection order for flat round-robin traversal.
@@ -837,12 +839,19 @@ func (m *modelScheduler) pickReadyAtPriorityLocked(preferWebsocket bool, priorit
 		return nil
 	}
 	view := &bucket.all
+	fillFirstEntries := bucket.fillFirstAll
 	if preferWebsocket && bucket.ws.pickFirst(predicate) != nil {
 		view = &bucket.ws
+		fillFirstEntries = bucket.fillFirstWS
 	}
 	var picked *scheduledAuth
 	if strategy == schedulerStrategyFillFirst {
-		picked = view.pickFirst(predicate)
+		for _, entry := range fillFirstEntries {
+			if predicate == nil || predicate(entry) {
+				picked = entry
+				break
+			}
+		}
 	} else {
 		picked = view.pickRoundRobin(predicate)
 	}
@@ -990,14 +999,27 @@ func (m *modelScheduler) rebuildIndexesLocked() {
 // buildReadyBucket prepares the general and websocket-only ready views for one priority bucket.
 func buildReadyBucket(entries []*scheduledAuth) *readyBucket {
 	bucket := &readyBucket{}
-	bucket.all = buildReadyView(entries)
-	wsEntries := make([]*scheduledAuth, 0, len(entries))
+	bucket.fillFirstAll = append([]*scheduledAuth(nil), entries...)
+
+	roundRobinEntries := append([]*scheduledAuth(nil), entries...)
+	sort.Slice(roundRobinEntries, func(i, j int) bool {
+		return roundRobinEntries[i].auth.ID < roundRobinEntries[j].auth.ID
+	})
+	bucket.all = buildReadyView(roundRobinEntries)
+
+	fillFirstWSEntries := make([]*scheduledAuth, 0, len(entries))
 	for _, entry := range entries {
 		if entry != nil && entry.meta != nil && entry.meta.websocketEnabled {
-			wsEntries = append(wsEntries, entry)
+			fillFirstWSEntries = append(fillFirstWSEntries, entry)
 		}
 	}
-	bucket.ws = buildReadyView(wsEntries)
+	bucket.fillFirstWS = append([]*scheduledAuth(nil), fillFirstWSEntries...)
+
+	roundRobinWSEntries := append([]*scheduledAuth(nil), fillFirstWSEntries...)
+	sort.Slice(roundRobinWSEntries, func(i, j int) bool {
+		return roundRobinWSEntries[i].auth.ID < roundRobinWSEntries[j].auth.ID
+	})
+	bucket.ws = buildReadyView(roundRobinWSEntries)
 	return bucket
 }
 

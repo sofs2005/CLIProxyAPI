@@ -814,8 +814,9 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := custom["display_name"].(string); got != "Custom Codex Model" {
 		t.Fatalf("custom display_name = %q, want Custom Codex Model", got)
 	}
-	if got := int(codexClientTestPriority(custom["priority"])); got != 129 {
-		t.Fatalf("custom priority = %v, want 129", custom["priority"])
+	expectedCustomPriority := codexClientTemplateMaxPriority(t) + 100
+	if got := int(codexClientTestPriority(custom["priority"])); got != expectedCustomPriority {
+		t.Fatalf("custom priority = %v, want %d", custom["priority"], expectedCustomPriority)
 	}
 	if got, _ := custom["description"].(string); got != "Custom model from registry" {
 		t.Fatalf("custom description = %q, want Custom model from registry", got)
@@ -869,6 +870,28 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 			t.Fatalf("expected hidden model %s in codex catalog", slug)
 		}
 	}
+}
+
+func codexClientTemplateMaxPriority(t *testing.T) int {
+	t.Helper()
+
+	var payload struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(registry.GetCodexClientModelsJSON(), &payload); err != nil {
+		t.Fatalf("unmarshal codex client models json: %v", err)
+	}
+
+	maxPriority := 0
+	for _, model := range payload.Models {
+		if priority := codexClientTestPriority(model["priority"]); priority > maxPriority {
+			maxPriority = priority
+		}
+	}
+	if maxPriority == 0 {
+		t.Fatal("expected codex client model templates to define priority values")
+	}
+	return maxPriority
 }
 
 func codexClientTestPriority(raw any) int {
