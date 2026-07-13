@@ -43,6 +43,7 @@ const attemptMaxIdleTime = 2 * time.Hour
 const managementSessionCookieName = "cpa_management_session"
 const managementSessionTTL = 12 * time.Hour
 const codexRefreshActionTokenTTL = 30 * time.Minute
+const xaiRefreshActionTokenTTL = 30 * time.Minute
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
@@ -352,6 +353,42 @@ func isCodexRefreshActionPath(c *gin.Context) bool {
 	return false
 }
 
+func (h *Handler) SignXAIRefreshActionToken() string {
+	if h == nil {
+		return ""
+	}
+	expires := time.Now().Add(xaiRefreshActionTokenTTL).Unix()
+	return h.signScopedActionToken("xai-refresh", expires)
+}
+
+func xaiRefreshActionTokenFromRequest(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	if token := strings.TrimSpace(c.GetHeader("X-XAI-Refresh-Token")); token != "" {
+		return token
+	}
+	return strings.TrimSpace(c.Query("xai_refresh_token"))
+}
+
+func isXAIRefreshActionPath(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	path := strings.TrimSpace(c.Request.URL.Path)
+	method := c.Request.Method
+	if path == "/v0/management/xai-refresh-auth-files" && method == http.MethodGet {
+		return true
+	}
+	if path == "/v0/management/xai-free-refresh" && method == http.MethodPost {
+		return true
+	}
+	if strings.HasPrefix(path, "/v0/management/xai-free-refresh/") && method == http.MethodGet {
+		return true
+	}
+	return false
+}
+
 func (h *Handler) signManagementSession(clientIP string, expires int64) string {
 	secret := h.managementSessionSecret()
 	if secret == "" || clientIP == "" || expires <= 0 {
@@ -464,6 +501,11 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		localClient := clientIP == "127.0.0.1" || clientIP == "::1"
 
 		if isCodexRefreshActionPath(c) && h.verifyScopedActionToken("codex-refresh", codexRefreshActionTokenFromRequest(c)) {
+			c.Next()
+			return
+		}
+
+		if isXAIRefreshActionPath(c) && h.verifyScopedActionToken("xai-refresh", xaiRefreshActionTokenFromRequest(c)) {
 			c.Next()
 			return
 		}
