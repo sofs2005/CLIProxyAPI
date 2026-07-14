@@ -2969,12 +2969,13 @@ type codexFreeRefreshResult struct {
 }
 
 type codexFreeRefreshRequest struct {
-	AuthIndex      string `json:"auth_index"`
-	AuthIndexCamel string `json:"authIndex"`
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	FileName       string `json:"file_name"`
-	Email          string `json:"email"`
+	AuthIndex      string   `json:"auth_index"`
+	AuthIndexCamel string   `json:"authIndex"`
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	FileName       string   `json:"file_name"`
+	Email          string   `json:"email"`
+	AuthIndices    []string `json:"auth_indices"`
 }
 
 var (
@@ -3074,7 +3075,28 @@ func (h *Handler) RefreshCodexFreeAccounts(c *gin.Context) {
 
 	selector := codexRefreshSelectorValue(body)
 	var targets []*coreauth.Auth
-	if selector != "" {
+	if len(body.AuthIndices) > 0 {
+		auths := h.authManager.List()
+		indexSet := make(map[string]bool, len(body.AuthIndices))
+		for _, idx := range body.AuthIndices {
+			if trimmed := strings.TrimSpace(idx); trimmed != "" {
+				indexSet[trimmed] = true
+			}
+		}
+		for _, a := range auths {
+			if !isCodexFreePlanAuth(a) || a.Disabled || a.Status == coreauth.StatusDisabled {
+				continue
+			}
+			a.EnsureIndex()
+			if indexSet[a.Index] {
+				targets = append(targets, a)
+			}
+		}
+		if len(targets) == 0 {
+			c.JSON(http.StatusOK, gin.H{"status": "ok", "message": "no matching codex accounts found", "total": 0})
+			return
+		}
+	} else if selector != "" {
 		target, statusCode, errMsg := h.selectCodexRefreshTarget(selector)
 		if errMsg != "" {
 			c.JSON(statusCode, gin.H{"error": errMsg})
@@ -3272,12 +3294,13 @@ type xaiRefreshResult struct {
 }
 
 type xaiRefreshRequest struct {
-	AuthIndex      string `json:"auth_index"`
-	AuthIndexCamel string `json:"authIndex"`
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	FileName       string `json:"file_name"`
-	Email          string `json:"email"`
+	AuthIndex      string   `json:"auth_index"`
+	AuthIndexCamel string   `json:"authIndex"`
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	FileName       string   `json:"file_name"`
+	Email          string   `json:"email"`
+	AuthIndices    []string `json:"auth_indices"`
 }
 
 var (
@@ -3389,7 +3412,28 @@ func (h *Handler) RefreshXAIFreeAccounts(c *gin.Context) {
 
 	selector := xaiRefreshSelectorValue(body)
 	var targets []*coreauth.Auth
-	if selector != "" {
+	if len(body.AuthIndices) > 0 {
+		auths := h.authManager.List()
+		indexSet := make(map[string]struct{}, len(body.AuthIndices))
+		for _, idx := range body.AuthIndices {
+			if trimmed := strings.TrimSpace(idx); trimmed != "" {
+				indexSet[trimmed] = struct{}{}
+			}
+		}
+		for _, a := range auths {
+			if !isXAIAuth(a) || a.Disabled || a.Status == coreauth.StatusDisabled {
+				continue
+			}
+			a.EnsureIndex()
+			if _, ok := indexSet[a.Index]; ok {
+				targets = append(targets, a)
+			}
+		}
+		if len(targets) == 0 {
+			c.JSON(http.StatusOK, gin.H{"status": "ok", "message": "no matching xai accounts found", "total": 0})
+			return
+		}
+	} else if selector != "" {
 		target, statusCode, errMsg := h.selectXAIRefreshTarget(selector)
 		if errMsg != "" {
 			c.JSON(statusCode, gin.H{"error": errMsg})

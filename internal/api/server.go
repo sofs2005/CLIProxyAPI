@@ -1582,10 +1582,27 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     };
   }
 
+  function getSelectedCodexAuthIndices() {
+    var checkboxes = document.querySelectorAll(".codex-refresh-checkbox:checked");
+    var indices = [];
+    for (var i = 0; i < checkboxes.length; i++) {
+      var idx = checkboxes[i].getAttribute("data-auth-index");
+      if (idx) indices.push(idx);
+    }
+    return indices;
+  }
+
   function startRefresh() {
     var btn = document.getElementById("codex-free-refresh-btn");
     var status = document.getElementById("codex-free-refresh-status");
     if (!btn || !status) return;
+
+    var selectedIndices = getSelectedCodexAuthIndices();
+    var body = {};
+    if (selectedIndices.length > 0) {
+      body.auth_indices = selectedIndices;
+    }
+
     btn.disabled = true;
     btn.textContent = "Starting...";
     status.textContent = "";
@@ -1597,7 +1614,7 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
       return;
     }
 
-    fetch(getMgmtBase() + "/codex-free-refresh", { method: "POST", headers: headers, credentials: "same-origin" })
+    fetch(getMgmtBase() + "/codex-free-refresh", { method: "POST", headers: headers, credentials: "same-origin", body: JSON.stringify(body) })
       .then(function (r) {
           if (!r.ok) throw new Error("HTTP " + r.status);
           return r.json();
@@ -1925,11 +1942,18 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     holder.className = "codex-single-refresh-wrapper";
     holder.style.cssText = "display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;margin-left:4px;";
     holder.setAttribute("data-auth-index", file.auth_index);
+    var checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "codex-refresh-checkbox";
+    checkbox.setAttribute("data-auth-index", file.auth_index);
+    checkbox.checked = true;
+    checkbox.style.cssText = "margin:0 2px;cursor:pointer;";
     var status = document.createElement("span");
     status.className = "codex-single-refresh-status";
     status.style.cssText = "font-size:11px;color:#94a3b8;white-space:pre-wrap;margin-left:2px;";
     var btn = createSingleRefreshButton(file, status);
     btn.setAttribute("data-auth-index", file.auth_index);
+    holder.appendChild(checkbox);
     holder.appendChild(btn);
     holder.appendChild(status);
     if (row.tagName && row.tagName.toLowerCase() === "tr") {
@@ -1971,6 +1995,28 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     }
   }
 
+  function createSelectAllBtn() {
+    var btn = document.createElement("button");
+    btn.id = "codex-select-all-btn";
+    btn.textContent = "Select All";
+    btn.type = "button";
+    btn.style.cssText = "margin:8px 0 8px 6px;padding:6px 10px;border:1px solid #475569;border-radius:6px;background:#1e293b;color:#e2e8f0;cursor:pointer;font-size:12px;";
+    btn.onmouseenter = function () { btn.style.background = "#334155"; };
+    btn.onmouseleave = function () { btn.style.background = "#1e293b"; };
+    btn.onclick = function () {
+      var checkboxes = document.querySelectorAll(".codex-refresh-checkbox");
+      var allChecked = true;
+      for (var i = 0; i < checkboxes.length; i++) {
+        if (!checkboxes[i].checked) { allChecked = false; break; }
+      }
+      for (var j = 0; j < checkboxes.length; j++) {
+        checkboxes[j].checked = !allChecked;
+      }
+      btn.textContent = allChecked ? "Select All" : "Deselect All";
+    };
+    return btn;
+  }
+
   function injectUI() {
     if (!isAuthRoute()) { removeInjectedUI(); return; }
     if (document.getElementById("codex-free-refresh-btn")) return;
@@ -1981,8 +2027,12 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
 
     var wrapper = document.createElement("div");
     wrapper.id = "codex-free-refresh-wrapper";
+    wrapper.style.cssText = "display:flex;align-items:center;flex-wrap:wrap;gap:4px;";
     wrapper.appendChild(createButton());
-    wrapper.appendChild(createStatusEl());
+    wrapper.appendChild(createSelectAllBtn());
+    var statusEl = createStatusEl();
+    statusEl.style.marginTop = "4px";
+    wrapper.appendChild(statusEl);
     target.insertBefore(wrapper, target.firstChild);
     injectSingleRefreshButtons();
   }
@@ -2208,10 +2258,27 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
     };
   }
 
+  function getSelectedXAIAuthIndices() {
+    var checkboxes = document.querySelectorAll(".xai-refresh-checkbox:checked");
+    var indices = [];
+    for (var i = 0; i < checkboxes.length; i++) {
+      var idx = checkboxes[i].getAttribute("data-auth-index");
+      if (idx) indices.push(idx);
+    }
+    return indices;
+  }
+
   function startRefresh() {
     var btn = document.getElementById("xai-free-refresh-btn");
     var status = document.getElementById("xai-free-refresh-status");
     if (!btn || !status) return;
+
+    var selectedIndices = getSelectedXAIAuthIndices();
+    var body = {};
+    if (selectedIndices.length > 0) {
+      body.auth_indices = selectedIndices;
+    }
+
     btn.disabled = true;
     btn.textContent = "Starting...";
     status.textContent = "";
@@ -2223,7 +2290,7 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
       return;
     }
 
-    fetch(getMgmtBase() + "/xai-free-refresh", { method: "POST", headers: headers, credentials: "same-origin" })
+    fetch(getMgmtBase() + "/xai-free-refresh", { method: "POST", headers: headers, credentials: "same-origin", body: JSON.stringify(body) })
       .then(function (r) {
           if (!r.ok) throw new Error("HTTP " + r.status);
           return r.json();
@@ -2596,11 +2663,18 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
     holder.className = "xai-single-refresh-wrapper";
     holder.style.cssText = "display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;margin-left:4px;";
     holder.setAttribute("data-auth-index", file.auth_index);
+    var checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "xai-refresh-checkbox";
+    checkbox.setAttribute("data-auth-index", file.auth_index);
+    checkbox.checked = true;
+    checkbox.style.cssText = "margin:0 2px;cursor:pointer;";
     var status = document.createElement("span");
     status.className = "xai-single-refresh-status";
     status.style.cssText = "font-size:11px;color:#94a3b8;white-space:pre-wrap;margin-left:2px;";
     var btn = createSingleRefreshButton(file, status);
     btn.setAttribute("data-auth-index", file.auth_index);
+    holder.appendChild(checkbox);
     holder.appendChild(btn);
     holder.appendChild(status);
     if (row.tagName && row.tagName.toLowerCase() === "tr") {
@@ -2643,6 +2717,28 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
     }
   }
 
+  function createSelectAllBtn() {
+    var btn = document.createElement("button");
+    btn.id = "xai-select-all-btn";
+    btn.textContent = "Select All";
+    btn.type = "button";
+    btn.style.cssText = "margin:8px 0 8px 6px;padding:6px 10px;border:1px solid #475569;border-radius:6px;background:#1e293b;color:#e2e8f0;cursor:pointer;font-size:12px;";
+    btn.onmouseenter = function () { btn.style.background = "#334155"; };
+    btn.onmouseleave = function () { btn.style.background = "#1e293b"; };
+    btn.onclick = function () {
+      var checkboxes = document.querySelectorAll(".xai-refresh-checkbox");
+      var allChecked = true;
+      for (var i = 0; i < checkboxes.length; i++) {
+        if (!checkboxes[i].checked) { allChecked = false; break; }
+      }
+      for (var j = 0; j < checkboxes.length; j++) {
+        checkboxes[j].checked = !allChecked;
+      }
+      btn.textContent = allChecked ? "Select All" : "Deselect All";
+    };
+    return btn;
+  }
+
   function injectUI() {
     if (!isAuthRoute()) { removeInjectedUI(); return; }
     if (document.getElementById("xai-free-refresh-btn")) return;
@@ -2653,8 +2749,12 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
 
     var wrapper = document.createElement("div");
     wrapper.id = "xai-free-refresh-wrapper";
+    wrapper.style.cssText = "display:flex;align-items:center;flex-wrap:wrap;gap:4px;";
     wrapper.appendChild(createButton());
-    wrapper.appendChild(createStatusEl());
+    wrapper.appendChild(createSelectAllBtn());
+    var statusEl = createStatusEl();
+    statusEl.style.marginTop = "4px";
+    wrapper.appendChild(statusEl);
     target.insertBefore(wrapper, target.firstChild);
     injectSingleRefreshButtons();
   }
