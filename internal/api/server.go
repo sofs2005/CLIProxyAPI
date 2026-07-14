@@ -2291,6 +2291,20 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
               var icon = r.success ? "✓" : "✗";
               var detail = r.success ? "" : " (" + (r.error || "unknown") + ")";
               lines.push("  " + icon + " " + (r.email || r.name || "?") + detail);
+              // Sync result to the corresponding card's status element.
+              var cardStatus = findCardStatusForResult(r);
+              if (cardStatus) {
+                cardStatus.textContent = r.success ? "✓ Refreshed" : "✗ " + (r.error || "failed");
+                cardStatus.style.color = r.success ? "#4ade80" : "#f87171";
+                var wrapper = cardStatus.parentElement;
+                if (wrapper) {
+                  var cardBtn = wrapper.querySelector(".xai-single-refresh-btn");
+                  if (cardBtn) {
+                    cardBtn.disabled = false;
+                    cardBtn.textContent = "Refresh";
+                  }
+                }
+              }
             }
           }
           status.textContent = lines.join("\n");
@@ -2313,6 +2327,7 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
   var authFilesCache = null;
   var authFilesCacheAt = 0;
   var authFilesPending = null;
+  var xaiAuthIndexByName = {};
 
   function normalizeValue(value) {
     return String(value == null ? "" : value).toLowerCase().replace(/\s+/g, " ").trim();
@@ -2321,6 +2336,36 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
   function isXAIAuthFile(file) {
     if (!file) return false;
     return normalizeValue(file.provider) === "xai" || normalizeValue(file.type) === "xai";
+  }
+
+  function buildXAIAuthIndexMap(files) {
+    xaiAuthIndexByName = {};
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      if (!f || !f.auth_index) continue;
+      if (f.name) xaiAuthIndexByName[normalizeValue(f.name)] = f.auth_index;
+      if (f.email) xaiAuthIndexByName[normalizeValue(f.email)] = f.auth_index;
+      if (f.label) xaiAuthIndexByName[normalizeValue(f.label)] = f.auth_index;
+    }
+  }
+
+  function findCardStatusForResult(result) {
+    if (!result) return null;
+    var candidates = [result.name, result.email];
+    for (var i = 0; i < candidates.length; i++) {
+      var key = normalizeValue(candidates[i]);
+      if (!key) continue;
+      var authIndex = xaiAuthIndexByName[key];
+      if (!authIndex) continue;
+      var el = document.querySelector(".xai-single-refresh-status[data-auth-index='" + String(authIndex).replace(/'/g, "\\'") + "']");
+      if (el) return el;
+      var wrapper = document.querySelector(".xai-single-refresh-wrapper[data-auth-index='" + String(authIndex).replace(/'/g, "\\'") + "']");
+      if (wrapper) {
+        var span = wrapper.querySelector(".xai-single-refresh-status");
+        if (span) return span;
+      }
+    }
+    return null;
   }
 
   function getAuthFiles(status) {
@@ -2578,6 +2623,7 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
         if (isXAIAuthFile(files[i]) && files[i].auth_index) xaiFiles.push(files[i]);
       }
       if (xaiFiles.length === 0) return;
+      buildXAIAuthIndexMap(xaiFiles);
       var rows = candidateAuthRows();
       var used = [];
       for (var j = 0; j < xaiFiles.length; j++) {
