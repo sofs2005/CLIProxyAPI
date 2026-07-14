@@ -3133,6 +3133,17 @@ func (h *Handler) runCodexFreeRefresh(taskID string, task *codexFreeRefreshTask,
 			result.Success = false
 			result.Error = errPing.Error()
 			log.WithError(errPing).WithField("auth", auth.FileName).Warn("codex free refresh ping failed")
+			now := time.Now().UTC()
+			auth.Status = coreauth.StatusError
+			auth.StatusMessage = errPing.Error()
+			auth.LastError = &coreauth.Error{
+				Code:    "refresh_failed",
+				Message: errPing.Error(),
+			}
+			auth.UpdatedAt = now
+			if _, errUpdate := h.authManager.Update(context.Background(), auth); errUpdate != nil {
+				log.WithError(errUpdate).WithField("auth", auth.FileName).Warn("failed to persist error status after codex free ping failure")
+			}
 		} else {
 			result.Success = true
 			now := time.Now().UTC()
@@ -3437,6 +3448,17 @@ func (h *Handler) runXAIRefresh(taskID string, task *xaiRefreshTask, targets []*
 			result.Success = false
 			result.Error = errPing.Error()
 			log.WithError(errPing).WithField("auth", auth.FileName).Warn("xai refresh ping failed")
+			now := time.Now().UTC()
+			auth.Status = coreauth.StatusError
+			auth.StatusMessage = errPing.Error()
+			auth.LastError = &coreauth.Error{
+				Code:    "refresh_failed",
+				Message: errPing.Error(),
+			}
+			auth.UpdatedAt = now
+			if _, errUpdate := h.authManager.Update(context.Background(), auth); errUpdate != nil {
+				log.WithError(errUpdate).WithField("auth", auth.FileName).Warn("failed to persist error status after xai ping failure")
+			}
 		} else {
 			result.Success = true
 			now := time.Now().UTC()
