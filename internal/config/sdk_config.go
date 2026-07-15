@@ -9,6 +9,12 @@ type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// ProxyByProvider maps a provider key (e.g. "claude", "codex") to a proxy URL applied
+	// to all credentials of that provider when the credential has no own proxy-url.
+	// Values follow proxy-url semantics and also accept "direct"/"none". It sits between
+	// the per-credential proxy-url and the global proxy-url in resolution priority.
+	ProxyByProvider map[string]string `yaml:"proxy-by-provider,omitempty" json:"proxy-by-provider,omitempty"`
+
 	// DisableImageGeneration controls whether the built-in image_generation tool is injected/allowed.
 	//
 	// Supported values:

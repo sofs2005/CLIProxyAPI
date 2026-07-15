@@ -842,6 +842,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 
+	// Normalize per-provider proxy overrides.
+	cfg.ProxyByProvider = NormalizeProxyByProvider(cfg.ProxyByProvider)
+
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
 
@@ -1189,6 +1192,30 @@ func NormalizeOAuthExcludedModels(entries map[string][]string) map[string][]stri
 			continue
 		}
 		out[key] = normalized
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// NormalizeProxyByProvider cleans provider -> proxy URL mappings by normalizing provider
+// keys (lowercased and trimmed) and trimming values. Empty keys or empty values are dropped.
+func NormalizeProxyByProvider(entries map[string]string) map[string]string {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(entries))
+	for provider, proxyURL := range entries {
+		key := strings.ToLower(strings.TrimSpace(provider))
+		if key == "" {
+			continue
+		}
+		value := strings.TrimSpace(proxyURL)
+		if value == "" {
+			continue
+		}
+		out[key] = value
 	}
 	if len(out) == 0 {
 		return nil

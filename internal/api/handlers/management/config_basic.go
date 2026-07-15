@@ -326,3 +326,46 @@ func (h *Handler) DeleteProxyURL(c *gin.Context) {
 	h.cfg.ProxyURL = ""
 	h.persist(c)
 }
+
+// Proxy by provider
+func (h *Handler) GetProxyByProvider(c *gin.Context) {
+	c.JSON(200, gin.H{"proxy-by-provider": h.cfg.ProxyByProvider})
+}
+
+// PutProxyByProvider sets or overwrites the proxy for a single provider key.
+// An empty value removes the entry.
+func (h *Handler) PutProxyByProvider(c *gin.Context) {
+	key := strings.ToLower(strings.TrimSpace(c.Param("provider")))
+	if key == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid provider"})
+		return
+	}
+	var body struct {
+		Value *string `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	value := strings.TrimSpace(*body.Value)
+	if value == "" {
+		delete(h.cfg.ProxyByProvider, key)
+	} else {
+		if h.cfg.ProxyByProvider == nil {
+			h.cfg.ProxyByProvider = make(map[string]string)
+		}
+		h.cfg.ProxyByProvider[key] = value
+	}
+	h.persist(c)
+}
+
+// DeleteProxyByProvider removes the proxy override for a single provider key.
+func (h *Handler) DeleteProxyByProvider(c *gin.Context) {
+	key := strings.ToLower(strings.TrimSpace(c.Param("provider")))
+	if key == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid provider"})
+		return
+	}
+	delete(h.cfg.ProxyByProvider, key)
+	h.persist(c)
+}

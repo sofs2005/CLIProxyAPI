@@ -802,13 +802,8 @@ func newProxyAwareWebsocketDialer(cfg *config.Config, auth *cliproxyauth.Auth) *
 		}).DialContext,
 	}
 
-	proxyURL := ""
-	if auth != nil {
-		proxyURL = strings.TrimSpace(auth.ProxyURL)
-	}
-	if proxyURL == "" && cfg != nil {
-		proxyURL = strings.TrimSpace(cfg.ProxyURL)
-	}
+	// Resolve the effective proxy following credential > provider > global priority.
+	proxyURL := helps.ResolveEffectiveProxy(cfg, auth)
 	if proxyURL == "" {
 		return dialer
 	}

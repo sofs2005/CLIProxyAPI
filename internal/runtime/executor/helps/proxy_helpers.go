@@ -12,10 +12,48 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// ResolveEffectiveProxy returns the proxy URL that should be used for the given auth,
+// following the resolution priority:
+//  1. per-credential proxy-url (auth.ProxyURL)
+//  2. per-provider proxy (cfg.ProxyByProvider[auth.Provider])
+//  3. global proxy-url (cfg.ProxyURL)
+//  4. empty string (let the caller fall back to context transport / direct)
+//
+// Values may be a proxy URL or the literals "direct"/"none"; they are returned verbatim
+// so downstream transport construction can honor them.
+func ResolveEffectiveProxy(cfg *config.Config, auth *cliproxyauth.Auth) string {
+	// Priority 1: per-credential proxy override.
+	if auth != nil {
+		if proxyURL := strings.TrimSpace(auth.ProxyURL); proxyURL != "" {
+			return proxyURL
+		}
+	}
+
+	// Priority 2: per-provider default proxy.
+	if cfg != nil && auth != nil && len(cfg.ProxyByProvider) > 0 {
+		key := strings.ToLower(strings.TrimSpace(auth.Provider))
+		if key != "" {
+			if proxyURL := strings.TrimSpace(cfg.ProxyByProvider[key]); proxyURL != "" {
+				return proxyURL
+			}
+		}
+	}
+
+	// Priority 3: global proxy.
+	if cfg != nil {
+		if proxyURL := strings.TrimSpace(cfg.ProxyURL); proxyURL != "" {
+			return proxyURL
+		}
+	}
+
+	return ""
+}
+
 // NewProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:
 // 1. Use auth.ProxyURL if configured (highest priority)
-// 2. Use cfg.ProxyURL if auth proxy is not configured
-// 3. Use RoundTripper from context if neither are configured
+// 2. Use cfg.ProxyByProvider[auth.Provider] if the credential has no own proxy
+// 3. Use cfg.ProxyURL if neither above is configured
+// 4. Use RoundTripper from context if none are configured
 //
 // Parameters:
 //   - ctx: The context containing optional RoundTripper
@@ -31,16 +69,8 @@ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 		httpClient.Timeout = timeout
 	}
 
-	// Priority 1: Use auth.ProxyURL if configured
-	var proxyURL string
-	if auth != nil {
-		proxyURL = strings.TrimSpace(auth.ProxyURL)
-	}
-
-	// Priority 2: Use cfg.ProxyURL if auth proxy is not configured
-	if proxyURL == "" && cfg != nil {
-		proxyURL = strings.TrimSpace(cfg.ProxyURL)
-	}
+	// Resolve the effective proxy following credential > provider > global priority.
+	proxyURL := ResolveEffectiveProxy(cfg, auth)
 
 	// If we have a proxy URL configured, set up the transport
 	if proxyURL != "" {

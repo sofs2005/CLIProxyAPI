@@ -852,6 +852,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/proxy-url", s.mgmt.PutProxyURL)
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
 
+		mgmt.GET("/proxy-by-provider", s.mgmt.GetProxyByProvider)
+		mgmt.PUT("/proxy-by-provider/:provider", s.mgmt.PutProxyByProvider)
+		mgmt.PATCH("/proxy-by-provider/:provider", s.mgmt.PutProxyByProvider)
+		mgmt.DELETE("/proxy-by-provider/:provider", s.mgmt.DeleteProxyByProvider)
+
 		mgmt.POST("/api-call", s.mgmt.APICall)
 
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
