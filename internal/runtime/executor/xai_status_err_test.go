@@ -20,11 +20,24 @@ func TestXAIStatusErr_FreeUsageExhaustedSets24hRetryAfter(t *testing.T) {
 	}
 }
 
-func TestXAIStatusErr_Generic429HasNoRetryAfter(t *testing.T) {
+func TestXAIStatusErr_Generic429AlsoSets24hRetryAfter(t *testing.T) {
 	body := []byte(`{"code":"rate_limit","error":"too many requests"}`)
 	err := xaiStatusErr(http.StatusTooManyRequests, body)
-	if err.RetryAfter() != nil {
-		t.Fatalf("expected nil RetryAfter for generic 429, got %v", *err.RetryAfter())
+	if err.RetryAfter() == nil {
+		t.Fatal("expected RetryAfter for generic 429")
+	}
+	if *err.RetryAfter() != 24*time.Hour {
+		t.Fatalf("RetryAfter = %v, want 24h", *err.RetryAfter())
+	}
+}
+
+func TestXAIStatusErr_EmptyBody429Sets24hRetryAfter(t *testing.T) {
+	err := xaiStatusErr(http.StatusTooManyRequests, nil)
+	if err.RetryAfter() == nil {
+		t.Fatal("expected RetryAfter for empty-body 429")
+	}
+	if *err.RetryAfter() != 24*time.Hour {
+		t.Fatalf("RetryAfter = %v, want 24h", *err.RetryAfter())
 	}
 }
 

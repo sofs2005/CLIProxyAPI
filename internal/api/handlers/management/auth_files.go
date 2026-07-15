@@ -3155,17 +3155,7 @@ func (h *Handler) runCodexFreeRefresh(taskID string, task *codexFreeRefreshTask,
 			result.Success = false
 			result.Error = errPing.Error()
 			log.WithError(errPing).WithField("auth", auth.FileName).Warn("codex free refresh ping failed")
-			now := time.Now().UTC()
-			auth.Status = coreauth.StatusError
-			auth.StatusMessage = errPing.Error()
-			auth.LastError = &coreauth.Error{
-				Code:    "refresh_failed",
-				Message: errPing.Error(),
-			}
-			auth.UpdatedAt = now
-			if _, errUpdate := h.authManager.Update(context.Background(), auth); errUpdate != nil {
-				log.WithError(errUpdate).WithField("auth", auth.FileName).Warn("failed to persist error status after codex free ping failure")
-			}
+			h.markRefreshPingFailure(auth, "gpt-5.4-mini", errPing)
 		} else {
 			result.Success = true
 			now := time.Now().UTC()
@@ -3492,17 +3482,7 @@ func (h *Handler) runXAIRefresh(taskID string, task *xaiRefreshTask, targets []*
 			result.Success = false
 			result.Error = errPing.Error()
 			log.WithError(errPing).WithField("auth", auth.FileName).Warn("xai refresh ping failed")
-			now := time.Now().UTC()
-			auth.Status = coreauth.StatusError
-			auth.StatusMessage = errPing.Error()
-			auth.LastError = &coreauth.Error{
-				Code:    "refresh_failed",
-				Message: errPing.Error(),
-			}
-			auth.UpdatedAt = now
-			if _, errUpdate := h.authManager.Update(context.Background(), auth); errUpdate != nil {
-				log.WithError(errUpdate).WithField("auth", auth.FileName).Warn("failed to persist error status after xai ping failure")
-			}
+			h.markRefreshPingFailure(auth, "grok-4.5", errPing)
 		} else {
 			result.Success = true
 			now := time.Now().UTC()
@@ -3532,6 +3512,54 @@ func (h *Handler) runXAIRefresh(taskID string, task *xaiRefreshTask, targets []*
 
 func minimalXAIRefreshPayload() []byte {
 	return []byte(`{"model":"grok-4.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true,"store":false,"instructions":""}`)
+}
+
+// markRefreshPingFailure records a management refresh ping failure through the
+// same cooldown path as live traffic, so exhausted OAuth accounts leave the
+// selection pool instead of only flipping Status to error.
+func (h *Handler) markRefreshPingFailure(auth *coreauth.Auth, model string, errPing error) {
+	if h == nil || h.authManager == nil || auth == nil || errPing == nil {
+		return
+	}
+	provider := strings.TrimSpace(auth.Provider)
+	authID := strings.TrimSpace(auth.ID)
+	if authID == "" {
+		authID = strings.TrimSpace(auth.FileName)
+	}
+	result := coreauth.Result{
+		AuthID:   authID,
+		Provider: provider,
+		Model:    strings.TrimSpace(model),
+		Success:  false,
+		Error: &coreauth.Error{
+			Code:    "refresh_failed",
+			Message: errPing.Error(),
+		},
+	}
+	var statusErr interface{ StatusCode() int }
+	if errors.As(errPing, &statusErr) && statusErr != nil {
+		result.Error.HTTPStatus = statusErr.StatusCode()
+	}
+	var retryAfterErr interface{ RetryAfter() *time.Duration }
+	if errors.As(errPing, &retryAfterErr) && retryAfterErr != nil {
+		if ra := retryAfterErr.RetryAfter(); ra != nil {
+			wait := *ra
+			result.RetryAfter = &wait
+		}
+	}
+	// When the executor did not expose a status code (wrapped errors that lost
+	// the type), still treat free-usage / usage-limit style messages as 429 so
+	// resolveQuotaCooldown can apply provider policy.
+	if result.Error.HTTPStatus == 0 {
+		lower := strings.ToLower(errPing.Error())
+		if strings.Contains(lower, "free-usage-exhausted") ||
+			strings.Contains(lower, "included free usage") ||
+			strings.Contains(lower, "usage_limit_reached") ||
+			strings.Contains(lower, "too many requests") {
+			result.Error.HTTPStatus = http.StatusTooManyRequests
+		}
+	}
+	h.authManager.MarkResult(context.Background(), result)
 }
 
 // pingXAIAccount sends a minimal chat request to keep the xAI OAuth token alive.

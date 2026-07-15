@@ -333,6 +333,17 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 	if auth.Disabled || auth.Status == StatusDisabled {
 		return true, blockReasonDisabled, time.Time{}
 	}
+	// Account-level quota blackout (any model that set Quota.Exceeded) blocks the
+	// whole credential so OAuth pools stop re-picking exhausted accounts under a
+	// different model alias.
+	if next, blocked := authLevelQuotaBlock(auth, now); blocked {
+		return true, blockReasonCooldown, next
+	}
+	// Codex usage metadata (primary_window used_percent/reset_at) can pre-block
+	// selection before the next 429 is observed.
+	if blocked, next := codexQuotaMetadataBlocking(auth, now); blocked {
+		return true, blockReasonCooldown, next
+	}
 	if model != "" {
 		if len(auth.ModelStates) > 0 {
 			state, ok := auth.ModelStates[model]
@@ -348,9 +359,9 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 				}
 				if state.Unavailable {
 					if state.NextRetryAfter.IsZero() {
-						return false, blockReasonNone, time.Time{}
-					}
-					if state.NextRetryAfter.After(now) {
+						// Fall through to auth-level cooldown when model state is
+						// incomplete (e.g. StatusError without a retry deadline).
+					} else if state.NextRetryAfter.After(now) {
 						next := state.NextRetryAfter
 						if !state.Quota.NextRecoverAt.IsZero() && state.Quota.NextRecoverAt.After(now) {
 							next = state.Quota.NextRecoverAt
@@ -362,27 +373,62 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 							return true, blockReasonCooldown, next
 						}
 						return true, blockReasonOther, next
+					} else {
+						return false, blockReasonNone, time.Time{}
 					}
+				} else {
+					return false, blockReasonNone, time.Time{}
 				}
-				return false, blockReasonNone, time.Time{}
 			}
+		}
+		// No usable model-specific state: honor auth-level cooldown if present.
+		if next, blocked := authLevelCooldownBlock(auth, now); blocked {
+			return true, blockReasonOther, next
 		}
 		return false, blockReasonNone, time.Time{}
 	}
-	if auth.Unavailable && auth.NextRetryAfter.After(now) {
-		next := auth.NextRetryAfter
-		if !auth.Quota.NextRecoverAt.IsZero() && auth.Quota.NextRecoverAt.After(now) {
-			next = auth.Quota.NextRecoverAt
-		}
-		if next.Before(now) {
-			next = now
-		}
+	if next, blocked := authLevelCooldownBlock(auth, now); blocked {
+		reason := blockReasonOther
 		if auth.Quota.Exceeded {
-			return true, blockReasonCooldown, next
+			reason = blockReasonCooldown
 		}
-		return true, blockReasonOther, next
+		return true, reason, next
 	}
 	return false, blockReasonNone, time.Time{}
+}
+
+func authLevelQuotaBlock(auth *Auth, now time.Time) (time.Time, bool) {
+	if auth == nil || !auth.Quota.Exceeded {
+		return time.Time{}, false
+	}
+	// xAI/Codex quotas are account-scoped; other providers keep per-model
+	// blackouts unless every model under the auth is already unavailable.
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	if provider != "xai" && provider != "codex" && !auth.Unavailable {
+		return time.Time{}, false
+	}
+	next := auth.Quota.NextRecoverAt
+	if next.IsZero() {
+		next = auth.NextRetryAfter
+	}
+	if next.IsZero() || !next.After(now) {
+		return time.Time{}, false
+	}
+	return next, true
+}
+
+func authLevelCooldownBlock(auth *Auth, now time.Time) (time.Time, bool) {
+	if auth == nil || !auth.Unavailable || !auth.NextRetryAfter.After(now) {
+		return time.Time{}, false
+	}
+	next := auth.NextRetryAfter
+	if !auth.Quota.NextRecoverAt.IsZero() && auth.Quota.NextRecoverAt.After(now) {
+		next = auth.Quota.NextRecoverAt
+	}
+	if next.Before(now) {
+		next = now
+	}
+	return next, true
 }
 
 // sessionPattern matches Claude Code user_id format:

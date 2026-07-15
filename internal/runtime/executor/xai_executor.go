@@ -2517,29 +2517,21 @@ func xaiPatchCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]by
 	return patched
 }
 
-// xaiFreeUsageExhaustedCooldown is the free-tier rolling window advertised by
-// cli-chat-proxy ("Usage resets over a rolling 24-hour window").
-const xaiFreeUsageExhaustedCooldown = 24 * time.Hour
+// xaiRateLimitCooldown is the account-level blackout applied to every xAI 429.
+// Free-tier exhaustion advertises a rolling 24-hour window; the same window is
+// used for generic rate limits so exhausted OAuth accounts leave the pool
+// instead of being re-selected on short exponential backoff.
+const xaiRateLimitCooldown = 24 * time.Hour
 
-// xaiStatusErr wraps upstream error bodies so free-tier exhaustion
-// (subscription:free-usage-exhausted) carries a 24h RetryAfter hint for
-// auth cooldown / account rotation. Generic 429s stay without an explicit
-// retry hint so conductor backoff still applies.
+// xaiStatusErr wraps upstream 429 bodies with a fixed 24h RetryAfter so the
+// auth manager can cool the credential for account rotation. Non-429 errors
+// stay without an explicit retry hint.
 func xaiStatusErr(code int, body []byte) statusErr {
 	err := statusErr{code: code, msg: string(body)}
-	if code != http.StatusTooManyRequests || len(body) == 0 {
+	if code != http.StatusTooManyRequests {
 		return err
 	}
-	codeStr := strings.ToLower(gjson.GetBytes(body, "code").String())
-	msg := strings.ToLower(gjson.GetBytes(body, "error").String())
-	if msg == "" {
-		msg = strings.ToLower(string(body))
-	}
-	if strings.Contains(codeStr, "free-usage-exhausted") ||
-		strings.Contains(msg, "free-usage-exhausted") ||
-		strings.Contains(msg, "included free usage") {
-		d := xaiFreeUsageExhaustedCooldown
-		err.retryAfter = &d
-	}
+	d := xaiRateLimitCooldown
+	err.retryAfter = &d
 	return err
 }

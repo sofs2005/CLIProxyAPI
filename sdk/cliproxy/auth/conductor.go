@@ -3828,11 +3828,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							var next time.Time
 							backoffLevel := state.Quota.BackoffLevel
 							if !disableCooling {
-								if result.RetryAfter != nil {
-									next = now.Add(*result.RetryAfter)
-								} else {
-									next, backoffLevel = quotaCooldownAfterFailure(state.Quota, now)
-								}
+								next, backoffLevel = resolveQuotaCooldown(auth, result.RetryAfter, state.Quota, now)
 							}
 							state.NextRetryAfter = next
 							state.Quota = QuotaState{
@@ -4382,11 +4378,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.Quota.Reason = "quota"
 		var next time.Time
 		if !disableCooling {
-			if retryAfter != nil {
-				next = now.Add(*retryAfter)
-			} else {
-				next, auth.Quota.BackoffLevel = quotaCooldownAfterFailure(auth.Quota, now)
-			}
+			next, auth.Quota.BackoffLevel = resolveQuotaCooldown(auth, retryAfter, auth.Quota, now)
 		}
 		auth.Quota.NextRecoverAt = next
 		auth.NextRetryAfter = next
@@ -4402,6 +4394,26 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			auth.StatusMessage = "request failed"
 		}
 	}
+}
+
+// resolveQuotaCooldown picks the recovery deadline for a 429/quota failure.
+// Preference order: explicit RetryAfter, provider-specific policy (xAI 24h,
+// Codex codex_quota.reset_at), then exponential quota backoff.
+func resolveQuotaCooldown(auth *Auth, retryAfter *time.Duration, quota QuotaState, now time.Time) (time.Time, int) {
+	if retryAfter != nil {
+		wait := *retryAfter
+		if wait < 0 {
+			wait = 0
+		}
+		return now.Add(wait), quota.BackoffLevel
+	}
+	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "xai") {
+		return now.Add(24 * time.Hour), quota.BackoffLevel
+	}
+	if ra := codexQuotaRetryAfterDuration(auth, now); ra != nil {
+		return now.Add(*ra), quota.BackoffLevel
+	}
+	return quotaCooldownAfterFailure(quota, now)
 }
 
 // quotaCooldownAfterFailure returns the recovery deadline and backoff level for
