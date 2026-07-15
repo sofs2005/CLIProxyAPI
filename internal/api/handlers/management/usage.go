@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 )
 
@@ -22,6 +23,9 @@ func (r usageQueueRecord) MarshalJSON() ([]byte, error) {
 
 // GetUsageQueue pops queued usage records from the usage queue.
 func (h *Handler) GetUsageQueue(c *gin.Context) {
+	// Skip access logging: the management frontend polls this endpoint frequently,
+	// which would otherwise flood the request log with no useful signal.
+	logging.SkipGinRequestLogging(c)
 	if h == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "handler unavailable"})
 		return
