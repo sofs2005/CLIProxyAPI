@@ -102,17 +102,39 @@ usage-statistics-enabled: true
 # Default: 60. Max: 3600.
 redis-usage-queue-retention-seconds: 60
 
-# Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
+# Proxy URL. Supports socks5/socks5h/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""
 
-# Per-provider default proxy. Applies to all credentials of a provider that have no own
-# proxy-url. Sits between the per-credential proxy-url and the global proxy-url in priority:
-# credential proxy-url > proxy-by-provider > proxy-url > direct.
-# Values follow proxy-url semantics and also accept "direct"/"none" to force a direct connect.
+# Per-provider default proxy. Applies a proxy to ALL credentials of a provider that do not
+# set their own proxy-url. Handy when reverse-engineered channels need a proxy while
+# official-passthrough channels should stay direct, without editing every credential.
+#
+# Resolution priority (first non-empty wins):
+#   credential proxy-url  >  proxy-by-provider[type]  >  global proxy-url  >  direct
+# A provider not listed here simply falls through to the global proxy-url (then direct),
+# i.e. behaves exactly as if this section did not exist.
+#
+# Accepted values (same as proxy-url):
+#   - "socks5://[user:pass@]host:port"   SOCKS5 proxy (DNS resolved by the proxy)
+#   - "socks5h://[user:pass@]host:port"  same as socks5 here; explicit remote-DNS spelling
+#   - "http://[user:pass@]host:port"     HTTP CONNECT proxy
+#   - "https://[user:pass@]host:port"    HTTPS CONNECT proxy
+#   - "direct" or "none"                 force a direct connection, ignoring the global proxy
+#   - "" or omitted                      fall through to the global proxy-url
+#
+# The key is the credential "type" field found in its auth JSON under auths/. Known types:
+#   claude, codex, gemini-cli, aistudio, vertex, antigravity, xai, kimi
+#   (OpenAI-compatible channels use the custom provider name you configured for them).
+# Tip: if unsure, open the credential's .json in auths/ and copy its "type" value verbatim.
+#
+# Coverage: request traffic honors this for every provider. Token refresh currently honors
+# it for claude / codex / kimi / xai (the reverse-engineered channels that need a proxy to
+# refresh); other providers refresh via the global proxy for now.
 # proxy-by-provider:
-#   codex: "socks5://127.0.0.1:1080"
-#   claude: "direct"
+#   codex: "socks5h://127.0.0.1:1080"
+#   claude: "socks5://user:pass@127.0.0.1:1080"
+#   gemini-cli: "direct"
 
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false
