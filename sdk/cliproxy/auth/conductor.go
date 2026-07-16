@@ -4102,7 +4102,35 @@ func hasUnauthorizedAuthFailure(auth *Auth) bool {
 	if auth == nil || auth.LastError == nil {
 		return false
 	}
-	return auth.LastError.StatusCode() == http.StatusUnauthorized || strings.EqualFold(auth.LastError.Code, "unauthorized")
+	return isCredentialAuthFailureError(auth.LastError)
+}
+
+// isCredentialAuthFailureError reports auth failures that token refresh can recover
+// from (401/403). Rate-limit and quota failures must not be treated as credential
+// errors: a successful OAuth refresh only proves the refresh_token still works.
+func isCredentialAuthFailureError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	switch err.StatusCode() {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return true
+	}
+	if strings.EqualFold(err.Code, "unauthorized") {
+		return true
+	}
+	return false
+}
+
+// isCredentialAuthFailureStatusMessage matches auth-level StatusMessage values set
+// for 401/403 failures by applyAuthFailureState / refresh failure handling.
+func isCredentialAuthFailureStatusMessage(msg string) bool {
+	switch strings.ToLower(strings.TrimSpace(msg)) {
+	case "unauthorized", "payment_required":
+		return true
+	default:
+		return false
+	}
 }
 
 func refreshErrorFromError(err error) *Error {
@@ -5898,16 +5926,24 @@ func authHasRefreshCredential(auth *Auth) bool {
 	return authMetadataString(auth, "refreshToken") != ""
 }
 
+// clearUnauthorizedModelStates resets model states blocked by 401/403 credential
+// failures after a successful token refresh. Non-credential failures (429 quota,
+// transient 5xx, etc.) are left intact.
 func clearUnauthorizedModelStates(auth *Auth, now time.Time) []string {
 	if auth == nil || len(auth.ModelStates) == 0 {
 		return nil
 	}
 	var resumed []string
 	for model, state := range auth.ModelStates {
-		if state == nil || state.LastError == nil {
+		if state == nil {
 			continue
 		}
-		if state.LastError.StatusCode() != http.StatusUnauthorized && !strings.EqualFold(state.LastError.Code, "unauthorized") {
+		if state.LastError != nil {
+			if !isCredentialAuthFailureError(state.LastError) {
+				continue
+			}
+		} else if !isCredentialAuthFailureStatusMessage(state.StatusMessage) {
+			// Keep model states without a credential error signal.
 			continue
 		}
 		resetModelState(state, now)
@@ -6027,14 +6063,29 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	}
 	updated.LastRefreshedAt = now
 	updated.NextRefreshAfter = time.Time{}
-	updated.LastError = nil
-	updated.StatusMessage = ""
-	updated.Unavailable = false
-	if updated.Status == StatusError {
-		updated.Status = StatusActive
-	}
 	updated.UpdatedAt = now
+	// Token refresh only proves the OAuth credential is still valid.
+	// Clear 401/403 credential failure state, but keep quota/rate-limit
+	// (429) and other non-credential error/cooldown state intact.
 	modelsToResume := clearUnauthorizedModelStates(updated, now)
+	clearedCredentialFailure := false
+	if isCredentialAuthFailureError(updated.LastError) || isCredentialAuthFailureStatusMessage(updated.StatusMessage) {
+		updated.LastError = nil
+		updated.StatusMessage = ""
+		clearedCredentialFailure = true
+	}
+	if clearedCredentialFailure || len(modelsToResume) > 0 {
+		if !hasModelError(updated, now) && !updated.Quota.Exceeded {
+			updated.Unavailable = false
+			updated.NextRetryAfter = time.Time{}
+			if updated.Status == StatusError {
+				updated.Status = StatusActive
+			}
+		} else if clearedCredentialFailure && len(updated.ModelStates) > 0 {
+			// Remaining model-level failures (e.g. 429) still own auth status.
+			updateAggregatedAvailability(updated, now)
+		}
+	}
 	if m.shouldRefresh(updated, now) {
 		updated.NextRefreshAfter = now.Add(refreshIneffectiveBackoff)
 	}
