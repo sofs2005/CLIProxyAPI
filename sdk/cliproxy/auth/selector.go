@@ -398,23 +398,53 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
 }
 
 func authLevelQuotaBlock(auth *Auth, now time.Time) (time.Time, bool) {
-	if auth == nil || !auth.Quota.Exceeded {
+	if auth == nil {
 		return time.Time{}, false
 	}
 	// xAI/Codex quotas are account-scoped; other providers keep per-model
 	// blackouts unless every model under the auth is already unavailable.
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
-	if provider != "xai" && provider != "codex" && !auth.Unavailable {
+	accountScoped := provider == "xai" || provider == "codex"
+
+	// Auth-level quota blackout.
+	if auth.Quota.Exceeded {
+		if !accountScoped && !auth.Unavailable {
+			return time.Time{}, false
+		}
+		next := auth.Quota.NextRecoverAt
+		if next.IsZero() {
+			next = auth.NextRetryAfter
+		}
+		if !next.IsZero() && next.After(now) {
+			return next, true
+		}
+	}
+
+	// For account-scoped providers, also honor any model-level quota window so
+	// a wiped auth.Quota (e.g. partial hot-reload) cannot re-admit the credential.
+	if !accountScoped || len(auth.ModelStates) == 0 {
 		return time.Time{}, false
 	}
-	next := auth.Quota.NextRecoverAt
-	if next.IsZero() {
-		next = auth.NextRetryAfter
+	var earliest time.Time
+	for _, state := range auth.ModelStates {
+		if state == nil || !state.Quota.Exceeded {
+			continue
+		}
+		next := state.Quota.NextRecoverAt
+		if next.IsZero() {
+			next = state.NextRetryAfter
+		}
+		if next.IsZero() || !next.After(now) {
+			continue
+		}
+		if earliest.IsZero() || next.Before(earliest) {
+			earliest = next
+		}
 	}
-	if next.IsZero() || !next.After(now) {
+	if earliest.IsZero() {
 		return time.Time{}, false
 	}
-	return next, true
+	return earliest, true
 }
 
 func authLevelCooldownBlock(auth *Auth, now time.Time) (time.Time, bool) {

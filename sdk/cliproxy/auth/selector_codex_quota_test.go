@@ -144,3 +144,35 @@ func TestIsAuthBlockedForModel_AuthLevelQuotaBlocksOtherModels(t *testing.T) {
 		t.Fatalf("next = %v, want %v", gotNext, next)
 	}
 }
+
+func TestIsAuthBlockedForModel_XAIModelLevelQuotaBlocksAuth(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	next := now.Add(24 * time.Hour)
+	// Auth-level Quota wiped (simulates partial hot-reload), model-level remains.
+	auth := &Auth{
+		ID:       "xai-model-quota",
+		Provider: "xai",
+		Status:   StatusActive,
+		ModelStates: map[string]*ModelState{
+			"grok-4.5": {
+				Status:         StatusError,
+				Unavailable:    true,
+				NextRetryAfter: next,
+				Quota:          QuotaState{Exceeded: true, Reason: "quota", NextRecoverAt: next},
+			},
+		},
+	}
+
+	blocked, reason, gotNext := isAuthBlockedForModel(auth, "grok-3", now)
+	if !blocked {
+		t.Fatal("expected model-level xAI quota to block other models")
+	}
+	if reason != blockReasonCooldown {
+		t.Fatalf("reason = %v, want cooldown", reason)
+	}
+	if !gotNext.Equal(next) {
+		t.Fatalf("next = %v, want %v", gotNext, next)
+	}
+}

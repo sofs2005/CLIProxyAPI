@@ -435,6 +435,11 @@ func (m *Manager) ReconcileRegistryModelStates(ctx context.Context, authID strin
 			if modelStateIsClean(state) {
 				continue
 			}
+			// Active cooldown/quota windows must survive catalog re-registration.
+			// Resetting them re-admits exhausted OAuth accounts into selection.
+			if modelStateHasActiveCooldown(state, now) {
+				continue
+			}
 			resetModelState(state, now)
 			changed = true
 		}
@@ -2210,6 +2215,9 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 		if len(auth.ModelStates) == 0 && len(existing.ModelStates) > 0 {
 			auth.ModelStates = existing.ModelStates
 		}
+		// File/config reloads synthesize StatusActive without runtime fields.
+		// Preserve non-credential failure/cooldown so 429 accounts stay blocked.
+		preserveRuntimeAuthFailureState(auth, existing)
 	}
 	now := time.Now()
 	clearedCooldown := false
@@ -3925,6 +3933,74 @@ func modelStateIsClean(state *ModelState) bool {
 		return false
 	}
 	return true
+}
+
+// modelStateHasActiveCooldown reports whether a model state still has a future
+// retry/quota deadline that selection should honor.
+func modelStateHasActiveCooldown(state *ModelState, now time.Time) bool {
+	if state == nil {
+		return false
+	}
+	if !state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now) {
+		return true
+	}
+	if state.Quota.Exceeded && !state.Quota.NextRecoverAt.IsZero() && state.Quota.NextRecoverAt.After(now) {
+		return true
+	}
+	return false
+}
+
+// preserveRuntimeAuthFailureState copies non-credential runtime failure fields
+// from existing into incoming when the update looks like a file/config reload
+// (StatusActive, empty LastError/StatusMessage, no quota exceeded).
+func preserveRuntimeAuthFailureState(incoming, existing *Auth) {
+	if incoming == nil || existing == nil {
+		return
+	}
+	// Only synthesize-style updates: active status with no explicit error payload.
+	if incoming.Status != StatusActive && incoming.Status != "" {
+		return
+	}
+	if incoming.LastError != nil || strings.TrimSpace(incoming.StatusMessage) != "" {
+		return
+	}
+	if incoming.Quota.Exceeded {
+		return
+	}
+	hasExistingFailure := existing.Status == StatusError ||
+		existing.LastError != nil ||
+		existing.Quota.Exceeded ||
+		(!existing.NextRetryAfter.IsZero()) ||
+		existing.Unavailable
+	if !hasExistingFailure {
+		return
+	}
+	// Do not re-apply pure credential failures that token refresh already cleared.
+	if isCredentialAuthFailureError(existing.LastError) || isCredentialAuthFailureStatusMessage(existing.StatusMessage) {
+		// Still keep non-credential model cooldowns already merged into ModelStates.
+		if existing.Quota.Exceeded && !incoming.Quota.Exceeded {
+			incoming.Quota = existing.Quota
+		}
+		return
+	}
+	if existing.Status == StatusError {
+		incoming.Status = existing.Status
+	}
+	if incoming.LastError == nil && existing.LastError != nil {
+		incoming.LastError = cloneError(existing.LastError)
+	}
+	if strings.TrimSpace(incoming.StatusMessage) == "" && strings.TrimSpace(existing.StatusMessage) != "" {
+		incoming.StatusMessage = existing.StatusMessage
+	}
+	if !incoming.Quota.Exceeded && existing.Quota.Exceeded {
+		incoming.Quota = existing.Quota
+	}
+	if incoming.NextRetryAfter.IsZero() && !existing.NextRetryAfter.IsZero() {
+		incoming.NextRetryAfter = existing.NextRetryAfter
+	}
+	if !incoming.Unavailable && existing.Unavailable {
+		incoming.Unavailable = existing.Unavailable
+	}
 }
 
 func updateAggregatedAvailability(auth *Auth, now time.Time) {
