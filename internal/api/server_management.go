@@ -788,11 +788,80 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     return null;
   }
 
+  function findAuthPageTitle() {
+    var roots = document.querySelectorAll("main,[role='main'],[class*='content'],[class*='page']");
+    var titleSelectors = "h1,h2,h3,[role='heading'],[data-page-title],[class*='pageTitle'],[class*='page-title'],[class*='title']";
+    for (var r = 0; r < roots.length; r++) {
+      var titles = roots[r].querySelectorAll(titleSelectors);
+      for (var i = 0; i < titles.length; i++) {
+        var title = titles[i];
+        if (isLayoutChrome(title) || (title.getClientRects && title.getClientRects().length === 0)) continue;
+        var text = normalizeText(title.innerText || title.textContent || "");
+        if (text.indexOf("auth files") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1) return title;
+      }
+    }
+    return null;
+  }
+
+  function getActiveAuthTypeFilter() {
+    var selectors = [
+      "[class*='filterTagActive']",
+      "[class*='filter-tag-active']",
+      "[class*='filterTag'][aria-pressed='true']",
+      "[class*='filter-tag'][aria-pressed='true']",
+      "[class*='filterTag'][data-state='active']",
+      "[class*='filter-tag'][data-state='active']"
+    ];
+    var roots = document.querySelectorAll("main,[role='main'],[class*='content'],[class*='page']");
+    var activeFilterText = function (node) {
+      return normalizeText((node.innerText || node.textContent || "") + " " + (node.getAttribute ? (node.getAttribute("aria-label") || node.getAttribute("title") || "") : ""));
+    };
+    var filterValue = function (text) {
+      if (text.indexOf("codex") !== -1) return "codex";
+      if (text.indexOf("xai") !== -1) return "xai";
+      if (text.indexOf("全部") !== -1 || /^all(?:\s|\d|$)/.test(text)) return "all";
+      return "other";
+    };
+    for (var r = 0; r < roots.length; r++) {
+      for (var s = 0; s < selectors.length; s++) {
+        var nodes = roots[r].querySelectorAll(selectors[s]);
+        for (var i = 0; i < nodes.length; i++) {
+          if (isLayoutChrome(nodes[i]) || (nodes[i].getClientRects && nodes[i].getClientRects().length === 0)) continue;
+          return filterValue(activeFilterText(nodes[i]));
+        }
+      }
+    }
+
+    var buttons = document.querySelectorAll("button");
+    for (var j = 0; j < buttons.length; j++) {
+      var button = buttons[j];
+      var className = normalizeText(button.getAttribute("class") || "");
+      var ariaCurrent = button.getAttribute("aria-current");
+      var active = className.indexOf("filtertagactive") !== -1 || className.indexOf("filter-tag-active") !== -1 || button.getAttribute("aria-pressed") === "true" || (ariaCurrent && ariaCurrent !== "false") || button.getAttribute("data-state") === "active";
+      if (!active || className.indexOf("filtertag") === -1 || isLayoutChrome(button) || (button.getClientRects && button.getClientRects().length === 0)) continue;
+      return filterValue(activeFilterText(button));
+    }
+    return "all";
+  }
+
+  function mountBatchToolbar(wrapper) {
+    var title = findAuthPageTitle();
+    if (!title) return false;
+    var header = title.closest ? title.closest("[class*='pageHeader'],[class*='page-header'],header") : null;
+    if (!header) header = title.parentElement;
+    if (!header || header === document.body) return false;
+    var position = window.getComputedStyle ? window.getComputedStyle(header).position : "static";
+    if (position === "static") header.style.position = "relative";
+    wrapper.style.cssText = "display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;position:absolute;top:0;right:0;max-width:100%;z-index:1;";
+    if (wrapper.parentElement !== header) header.appendChild(wrapper);
+    return true;
+  }
+
   function createButton() {
     var btn = document.createElement("button");
     btn.id = "codex-free-refresh-btn";
     btn.textContent = "⟳ Refresh Free Accounts";
-    btn.style.cssText = "margin:8px 0;padding:6px 14px;border:1px solid #475569;border-radius:6px;background:#1e293b;color:#e2e8f0;cursor:pointer;font-size:13px;";
+    btn.style.cssText = "margin:4px 0;padding:6px 14px;border:1px solid #475569;border-radius:6px;background:#1e293b;color:#e2e8f0;cursor:pointer;font-size:13px;";
     btn.onmouseenter = function () { btn.style.background = "#334155"; };
     btn.onmouseleave = function () { btn.style.background = "#1e293b"; };
     btn.onclick = startRefresh;
@@ -1229,9 +1298,13 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     });
   }
 
-  function removeInjectedUI() {
+  function removeBatchUI() {
     var wrapper = document.getElementById("codex-free-refresh-wrapper");
     if (wrapper && wrapper.parentElement) wrapper.parentElement.removeChild(wrapper);
+  }
+
+  function removeInjectedUI() {
+    removeBatchUI();
     var singles = document.querySelectorAll(".codex-single-refresh-wrapper");
     for (var i = 0; i < singles.length; i++) {
       if (singles[i].parentElement) singles[i].parentElement.removeChild(singles[i]);
@@ -1262,20 +1335,26 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
 
   function injectUI() {
     if (!isAuthRoute()) { removeInjectedUI(); return; }
-    if (document.getElementById("codex-free-refresh-btn")) return;
+    if (getActiveAuthTypeFilter() !== "codex") {
+      removeBatchUI();
+      injectSingleRefreshButtons();
+      return;
+    }
 
-    var target = document.querySelector("main") || document.querySelector("[role='main']") || document.querySelector("[class*='content']") || document.body;
-    if (!target) return;
-
-    var wrapper = document.createElement("div");
-    wrapper.id = "codex-free-refresh-wrapper";
-    wrapper.style.cssText = "display:flex;align-items:center;flex-wrap:wrap;gap:4px;";
-    wrapper.appendChild(createButton());
-    wrapper.appendChild(createSelectAllBtn());
-    var statusEl = createStatusEl();
-    statusEl.style.marginTop = "4px";
-    wrapper.appendChild(statusEl);
-    target.insertBefore(wrapper, target.firstChild);
+    var wrapper = document.getElementById("codex-free-refresh-wrapper");
+    if (!wrapper) {
+      wrapper = document.createElement("div");
+      wrapper.id = "codex-free-refresh-wrapper";
+      wrapper.appendChild(createButton());
+      wrapper.appendChild(createSelectAllBtn());
+      var statusEl = createStatusEl();
+      statusEl.style.marginTop = "4px";
+      wrapper.appendChild(statusEl);
+    }
+    if (!mountBatchToolbar(wrapper)) {
+      removeBatchUI();
+      return;
+    }
     injectSingleRefreshButtons();
   }
 
@@ -1304,7 +1383,7 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     observer = new MutationObserver(function () {
       scheduleAuthPatch();
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "aria-pressed", "aria-current", "data-state"] });
   }
 
   function handleRouteChange() {
@@ -1458,11 +1537,80 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
     return null;
   }
 
+  function findAuthPageTitle() {
+    var roots = document.querySelectorAll("main,[role='main'],[class*='content'],[class*='page']");
+    var titleSelectors = "h1,h2,h3,[role='heading'],[data-page-title],[class*='pageTitle'],[class*='page-title'],[class*='title']";
+    for (var r = 0; r < roots.length; r++) {
+      var titles = roots[r].querySelectorAll(titleSelectors);
+      for (var i = 0; i < titles.length; i++) {
+        var title = titles[i];
+        if (isLayoutChrome(title) || (title.getClientRects && title.getClientRects().length === 0)) continue;
+        var text = normalizeText(title.innerText || title.textContent || "");
+        if (text.indexOf("auth files") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1) return title;
+      }
+    }
+    return null;
+  }
+
+  function getActiveAuthTypeFilter() {
+    var selectors = [
+      "[class*='filterTagActive']",
+      "[class*='filter-tag-active']",
+      "[class*='filterTag'][aria-pressed='true']",
+      "[class*='filter-tag'][aria-pressed='true']",
+      "[class*='filterTag'][data-state='active']",
+      "[class*='filter-tag'][data-state='active']"
+    ];
+    var roots = document.querySelectorAll("main,[role='main'],[class*='content'],[class*='page']");
+    var activeFilterText = function (node) {
+      return normalizeText((node.innerText || node.textContent || "") + " " + (node.getAttribute ? (node.getAttribute("aria-label") || node.getAttribute("title") || "") : ""));
+    };
+    var filterValue = function (text) {
+      if (text.indexOf("codex") !== -1) return "codex";
+      if (text.indexOf("xai") !== -1) return "xai";
+      if (text.indexOf("全部") !== -1 || /^all(?:\s|\d|$)/.test(text)) return "all";
+      return "other";
+    };
+    for (var r = 0; r < roots.length; r++) {
+      for (var s = 0; s < selectors.length; s++) {
+        var nodes = roots[r].querySelectorAll(selectors[s]);
+        for (var i = 0; i < nodes.length; i++) {
+          if (isLayoutChrome(nodes[i]) || (nodes[i].getClientRects && nodes[i].getClientRects().length === 0)) continue;
+          return filterValue(activeFilterText(nodes[i]));
+        }
+      }
+    }
+
+    var buttons = document.querySelectorAll("button");
+    for (var j = 0; j < buttons.length; j++) {
+      var button = buttons[j];
+      var className = normalizeText(button.getAttribute("class") || "");
+      var ariaCurrent = button.getAttribute("aria-current");
+      var active = className.indexOf("filtertagactive") !== -1 || className.indexOf("filter-tag-active") !== -1 || button.getAttribute("aria-pressed") === "true" || (ariaCurrent && ariaCurrent !== "false") || button.getAttribute("data-state") === "active";
+      if (!active || className.indexOf("filtertag") === -1 || isLayoutChrome(button) || (button.getClientRects && button.getClientRects().length === 0)) continue;
+      return filterValue(activeFilterText(button));
+    }
+    return "all";
+  }
+
+  function mountBatchToolbar(wrapper) {
+    var title = findAuthPageTitle();
+    if (!title) return false;
+    var header = title.closest ? title.closest("[class*='pageHeader'],[class*='page-header'],header") : null;
+    if (!header) header = title.parentElement;
+    if (!header || header === document.body) return false;
+    var position = window.getComputedStyle ? window.getComputedStyle(header).position : "static";
+    if (position === "static") header.style.position = "relative";
+    wrapper.style.cssText = "display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;position:absolute;top:0;right:0;max-width:100%;z-index:1;";
+    if (wrapper.parentElement !== header) header.appendChild(wrapper);
+    return true;
+  }
+
   function createButton() {
     var btn = document.createElement("button");
     btn.id = "xai-free-refresh-btn";
     btn.textContent = "⟳ Refresh xAI Accounts";
-    btn.style.cssText = "margin:8px 0;padding:6px 14px;border:1px solid #475569;border-radius:6px;background:#1e293b;color:#e2e8f0;cursor:pointer;font-size:13px;";
+    btn.style.cssText = "margin:4px 0;padding:6px 14px;border:1px solid #475569;border-radius:6px;background:#1e293b;color:#e2e8f0;cursor:pointer;font-size:13px;";
     btn.onmouseenter = function () { btn.style.background = "#334155"; };
     btn.onmouseleave = function () { btn.style.background = "#1e293b"; };
     btn.onclick = startRefresh;
@@ -1945,9 +2093,13 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
     });
   }
 
-  function removeInjectedUI() {
+  function removeBatchUI() {
     var wrapper = document.getElementById("xai-free-refresh-wrapper");
     if (wrapper && wrapper.parentElement) wrapper.parentElement.removeChild(wrapper);
+  }
+
+  function removeInjectedUI() {
+    removeBatchUI();
     var singles = document.querySelectorAll(".xai-single-refresh-wrapper");
     for (var i = 0; i < singles.length; i++) {
       if (singles[i].parentElement) singles[i].parentElement.removeChild(singles[i]);
@@ -1978,20 +2130,26 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
 
   function injectUI() {
     if (!isAuthRoute()) { removeInjectedUI(); return; }
-    if (document.getElementById("xai-free-refresh-btn")) return;
+    if (getActiveAuthTypeFilter() !== "xai") {
+      removeBatchUI();
+      injectSingleRefreshButtons();
+      return;
+    }
 
-    var target = document.querySelector("main") || document.querySelector("[role='main']") || document.querySelector("[class*='content']") || document.body;
-    if (!target) return;
-
-    var wrapper = document.createElement("div");
-    wrapper.id = "xai-free-refresh-wrapper";
-    wrapper.style.cssText = "display:flex;align-items:center;flex-wrap:wrap;gap:4px;";
-    wrapper.appendChild(createButton());
-    wrapper.appendChild(createSelectAllBtn());
-    var statusEl = createStatusEl();
-    statusEl.style.marginTop = "4px";
-    wrapper.appendChild(statusEl);
-    target.insertBefore(wrapper, target.firstChild);
+    var wrapper = document.getElementById("xai-free-refresh-wrapper");
+    if (!wrapper) {
+      wrapper = document.createElement("div");
+      wrapper.id = "xai-free-refresh-wrapper";
+      wrapper.appendChild(createButton());
+      wrapper.appendChild(createSelectAllBtn());
+      var statusEl = createStatusEl();
+      statusEl.style.marginTop = "4px";
+      wrapper.appendChild(statusEl);
+    }
+    if (!mountBatchToolbar(wrapper)) {
+      removeBatchUI();
+      return;
+    }
     injectSingleRefreshButtons();
   }
 
@@ -2020,7 +2178,7 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
     observer = new MutationObserver(function () {
       scheduleAuthPatch();
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "aria-pressed", "aria-current", "data-state"] });
   }
 
   function handleRouteChange() {
