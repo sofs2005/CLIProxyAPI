@@ -858,10 +858,9 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
       if (header.querySelector) {
         var actionNodes = header.querySelectorAll("[class*='actions'],[class*='Actions'],[class*='headerActions'],[class*='header-actions']");
         for (var i = 0; i < actionNodes.length; i++) {
-          if (actionNodes[i] !== wrapper && !actionNodes[i].contains(wrapper)) {
-            actions = actionNodes[i];
-            if (actionNodes[i].parentElement === header) break;
-          }
+          if (actionNodes[i] === wrapper) continue;
+          if (!actions || actionNodes[i].contains(wrapper) || actionNodes[i].parentElement === header) actions = actionNodes[i];
+          if (actionNodes[i].contains(wrapper) || actionNodes[i].parentElement === header) break;
         }
       }
       if (actions) {
@@ -1633,10 +1632,9 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
       if (header.querySelector) {
         var actionNodes = header.querySelectorAll("[class*='actions'],[class*='Actions'],[class*='headerActions'],[class*='header-actions']");
         for (var i = 0; i < actionNodes.length; i++) {
-          if (actionNodes[i] !== wrapper && !actionNodes[i].contains(wrapper)) {
-            actions = actionNodes[i];
-            if (actionNodes[i].parentElement === header) break;
-          }
+          if (actionNodes[i] === wrapper) continue;
+          if (!actions || actionNodes[i].contains(wrapper) || actionNodes[i].parentElement === header) actions = actionNodes[i];
+          if (actionNodes[i].contains(wrapper) || actionNodes[i].parentElement === header) break;
         }
       }
       if (actions) {
