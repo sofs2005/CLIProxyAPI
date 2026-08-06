@@ -830,7 +830,7 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
       for (var s = 0; s < selectors.length; s++) {
         var nodes = roots[r].querySelectorAll(selectors[s]);
         for (var i = 0; i < nodes.length; i++) {
-          if (nodes[i].getAttribute && nodes[i].getAttribute("aria-hidden") === "true") continue;
+          if ((nodes[i].closest && nodes[i].closest("[aria-hidden='true'],[inert]")) || (nodes[i].getAttribute && nodes[i].getAttribute("aria-hidden") === "true")) continue;
           return filterValue(activeFilterText(nodes[i]));
         }
       }
@@ -843,7 +843,7 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
       var ariaCurrent = button.getAttribute("aria-current");
       var active = className.indexOf("filtertagactive") !== -1 || className.indexOf("filter-tag-active") !== -1 || className.indexOf("tabactive") !== -1 || className.indexOf("tab-active") !== -1 || button.getAttribute("aria-pressed") === "true" || (ariaCurrent && ariaCurrent !== "false") || button.getAttribute("data-state") === "active";
       var isProviderTab = className.indexOf("filtertag") !== -1 || className.indexOf("tab") !== -1 || button.getAttribute("data-provider") || button.getAttribute("data-type");
-      if (!active || !isProviderTab || (button.getAttribute && button.getAttribute("aria-hidden") === "true")) continue;
+      if (!active || !isProviderTab || (button.closest && button.closest("[aria-hidden='true'],[inert]")) || (button.getAttribute && button.getAttribute("aria-hidden") === "true")) continue;
       return filterValue(activeFilterText(button));
     }
     return "all";
@@ -854,6 +854,21 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     var header = title && title.closest ? title.closest("[class*='pageHeader'],[class*='page-header'],header") : null;
     if (!header && title) header = title.parentElement;
     if (header && header !== document.body) {
+      var actions = null;
+      if (header.querySelector) {
+        var actionNodes = header.querySelectorAll("[class*='actions'],[class*='Actions'],[class*='headerActions'],[class*='header-actions']");
+        for (var i = 0; i < actionNodes.length; i++) {
+          if (actionNodes[i] !== wrapper && !actionNodes[i].contains(wrapper)) {
+            actions = actionNodes[i];
+            if (actionNodes[i].parentElement === header) break;
+          }
+        }
+      }
+      if (actions) {
+        wrapper.style.cssText = "display:inline-flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;position:static;max-width:100%;z-index:1;margin-left:8px;";
+        if (wrapper.parentElement !== actions) actions.appendChild(wrapper);
+        return true;
+      }
       var position = window.getComputedStyle ? window.getComputedStyle(header).position : "static";
       if (position === "static") header.style.position = "relative";
       wrapper.style.cssText = "display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;position:absolute;top:0;right:0;max-width:100%;z-index:1;";
@@ -1590,7 +1605,7 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
       for (var s = 0; s < selectors.length; s++) {
         var nodes = roots[r].querySelectorAll(selectors[s]);
         for (var i = 0; i < nodes.length; i++) {
-          if (nodes[i].getAttribute && nodes[i].getAttribute("aria-hidden") === "true") continue;
+          if ((nodes[i].closest && nodes[i].closest("[aria-hidden='true'],[inert]")) || (nodes[i].getAttribute && nodes[i].getAttribute("aria-hidden") === "true")) continue;
           return filterValue(activeFilterText(nodes[i]));
         }
       }
@@ -1603,7 +1618,7 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
       var ariaCurrent = button.getAttribute("aria-current");
       var active = className.indexOf("filtertagactive") !== -1 || className.indexOf("filter-tag-active") !== -1 || className.indexOf("tabactive") !== -1 || className.indexOf("tab-active") !== -1 || button.getAttribute("aria-pressed") === "true" || (ariaCurrent && ariaCurrent !== "false") || button.getAttribute("data-state") === "active";
       var isProviderTab = className.indexOf("filtertag") !== -1 || className.indexOf("tab") !== -1 || button.getAttribute("data-provider") || button.getAttribute("data-type");
-      if (!active || !isProviderTab || (button.getAttribute && button.getAttribute("aria-hidden") === "true")) continue;
+      if (!active || !isProviderTab || (button.closest && button.closest("[aria-hidden='true'],[inert]")) || (button.getAttribute && button.getAttribute("aria-hidden") === "true")) continue;
       return filterValue(activeFilterText(button));
     }
     return "all";
@@ -1614,6 +1629,21 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
     var header = title && title.closest ? title.closest("[class*='pageHeader'],[class*='page-header'],header") : null;
     if (!header && title) header = title.parentElement;
     if (header && header !== document.body) {
+      var actions = null;
+      if (header.querySelector) {
+        var actionNodes = header.querySelectorAll("[class*='actions'],[class*='Actions'],[class*='headerActions'],[class*='header-actions']");
+        for (var i = 0; i < actionNodes.length; i++) {
+          if (actionNodes[i] !== wrapper && !actionNodes[i].contains(wrapper)) {
+            actions = actionNodes[i];
+            if (actionNodes[i].parentElement === header) break;
+          }
+        }
+      }
+      if (actions) {
+        wrapper.style.cssText = "display:inline-flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;position:static;max-width:100%;z-index:1;margin-left:8px;";
+        if (wrapper.parentElement !== actions) actions.appendChild(wrapper);
+        return true;
+      }
       var position = window.getComputedStyle ? window.getComputedStyle(header).position : "static";
       if (position === "static") header.style.position = "relative";
       wrapper.style.cssText = "display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;position:absolute;top:0;right:0;max-width:100%;z-index:1;";
