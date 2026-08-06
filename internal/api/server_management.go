@@ -727,7 +727,7 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
 
   function isAuthRoute() {
     var hash = normalizeRouteText(window.location.hash || "");
-    return routeHasToken(hash, "auth files") || routeHasToken(hash, "/auth") || routeHasToken(hash, "认证文件") || routeHasToken(hash, "凭证");
+    return routeHasToken(hash, "auth files") || routeHasToken(hash, "authentication files") || routeHasToken(hash, "/auth") || routeHasToken(hash, "认证文件") || routeHasToken(hash, "凭证") || activeAuthRouteFromNavigation();
   }
 
   function activeAuthRouteFromNavigation() {
@@ -738,7 +738,7 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
         var node = nodes[j];
         if (!isLayoutChrome(node) && !(node.getAttribute && normalizeText(node.getAttribute("role")) === "tab")) continue;
         var text = normalizeRouteText((node.innerText || node.textContent || "") + " " + (node.getAttribute ? (node.getAttribute("aria-label") || node.getAttribute("title") || "") : ""));
-        if (routeHasToken(text, "auth files") || routeHasToken(text, "认证文件") || routeHasToken(text, "凭证")) return true;
+        if (routeHasToken(text, "auth files") || routeHasToken(text, "authentication files") || routeHasToken(text, "认证文件") || routeHasToken(text, "凭证")) return true;
       }
     }
     return false;
@@ -763,7 +763,7 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
       for (var i = 0; i < titles.length; i++) {
         if (isLayoutChrome(titles[i])) continue;
         var title = normalizeText(titles[i].innerText || titles[i].textContent || "");
-        if (title.indexOf("auth files") === -1 && title.indexOf("认证文件") === -1 && title.indexOf("凭证") === -1) continue;
+        if (title.indexOf("auth files") === -1 && title.indexOf("authentication files") === -1 && title.indexOf("认证文件") === -1 && title.indexOf("凭证") === -1) continue;
         var container = titles[i];
         for (var depth = 0; depth < 5 && container && container !== root; depth++) {
           if (container.matches && container.matches("section,article,.card,.panel,[class*='card'],[class*='panel'],[class*='page']")) break;
@@ -795,9 +795,9 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
       var titles = roots[r].querySelectorAll(titleSelectors);
       for (var i = 0; i < titles.length; i++) {
         var title = titles[i];
-        if (isLayoutChrome(title) || (title.getClientRects && title.getClientRects().length === 0)) continue;
+        if ((title.closest && title.closest("[aria-hidden='true'],[inert]")) || (title.getAttribute && title.getAttribute("aria-hidden") === "true")) continue;
         var text = normalizeText(title.innerText || title.textContent || "");
-        if (text.indexOf("auth files") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1) return title;
+        if (text.indexOf("auth files") !== -1 || text.indexOf("authentication files") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1) return title;
       }
     }
     return null;
@@ -805,6 +805,9 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
 
   function getActiveAuthTypeFilter() {
     var selectors = [
+      "[class*='tabActive']",
+      "[class*='tab-active']",
+      "[class*='tab'][aria-pressed='true']",
       "[class*='filterTagActive']",
       "[class*='filter-tag-active']",
       "[class*='filterTag'][aria-pressed='true']",
@@ -814,7 +817,8 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
     ];
     var roots = document.querySelectorAll("main,[role='main'],[class*='content'],[class*='page']");
     var activeFilterText = function (node) {
-      return normalizeText((node.innerText || node.textContent || "") + " " + (node.getAttribute ? (node.getAttribute("aria-label") || node.getAttribute("title") || "") : ""));
+      var attrs = node.getAttribute ? ((node.getAttribute("aria-label") || "") + " " + (node.getAttribute("title") || "") + " " + (node.getAttribute("data-provider") || "") + " " + (node.getAttribute("data-type") || "") + " " + (node.getAttribute("data-filter") || "")) : "";
+      return normalizeText((node.innerText || node.textContent || "") + " " + attrs);
     };
     var filterValue = function (text) {
       if (text.indexOf("codex") !== -1) return "codex";
@@ -826,7 +830,7 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
       for (var s = 0; s < selectors.length; s++) {
         var nodes = roots[r].querySelectorAll(selectors[s]);
         for (var i = 0; i < nodes.length; i++) {
-          if (isLayoutChrome(nodes[i]) || (nodes[i].getClientRects && nodes[i].getClientRects().length === 0)) continue;
+          if (nodes[i].getAttribute && nodes[i].getAttribute("aria-hidden") === "true") continue;
           return filterValue(activeFilterText(nodes[i]));
         }
       }
@@ -837,8 +841,9 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
       var button = buttons[j];
       var className = normalizeText(button.getAttribute("class") || "");
       var ariaCurrent = button.getAttribute("aria-current");
-      var active = className.indexOf("filtertagactive") !== -1 || className.indexOf("filter-tag-active") !== -1 || button.getAttribute("aria-pressed") === "true" || (ariaCurrent && ariaCurrent !== "false") || button.getAttribute("data-state") === "active";
-      if (!active || className.indexOf("filtertag") === -1 || isLayoutChrome(button) || (button.getClientRects && button.getClientRects().length === 0)) continue;
+      var active = className.indexOf("filtertagactive") !== -1 || className.indexOf("filter-tag-active") !== -1 || className.indexOf("tabactive") !== -1 || className.indexOf("tab-active") !== -1 || button.getAttribute("aria-pressed") === "true" || (ariaCurrent && ariaCurrent !== "false") || button.getAttribute("data-state") === "active";
+      var isProviderTab = className.indexOf("filtertag") !== -1 || className.indexOf("tab") !== -1 || button.getAttribute("data-provider") || button.getAttribute("data-type");
+      if (!active || !isProviderTab || (button.getAttribute && button.getAttribute("aria-hidden") === "true")) continue;
       return filterValue(activeFilterText(button));
     }
     return "all";
@@ -846,14 +851,20 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
 
   function mountBatchToolbar(wrapper) {
     var title = findAuthPageTitle();
-    if (!title) return false;
-    var header = title.closest ? title.closest("[class*='pageHeader'],[class*='page-header'],header") : null;
-    if (!header) header = title.parentElement;
-    if (!header || header === document.body) return false;
-    var position = window.getComputedStyle ? window.getComputedStyle(header).position : "static";
-    if (position === "static") header.style.position = "relative";
-    wrapper.style.cssText = "display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;position:absolute;top:0;right:0;max-width:100%;z-index:1;";
-    if (wrapper.parentElement !== header) header.appendChild(wrapper);
+    var header = title && title.closest ? title.closest("[class*='pageHeader'],[class*='page-header'],header") : null;
+    if (!header && title) header = title.parentElement;
+    if (header && header !== document.body) {
+      var position = window.getComputedStyle ? window.getComputedStyle(header).position : "static";
+      if (position === "static") header.style.position = "relative";
+      wrapper.style.cssText = "display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;position:absolute;top:0;right:0;max-width:100%;z-index:1;";
+      if (wrapper.parentElement !== header) header.appendChild(wrapper);
+      return true;
+    }
+
+    var target = document.querySelector("main") || document.querySelector("[role='main']") || document.querySelector("[class*='content']") || document.body;
+    if (!target) return false;
+    wrapper.style.cssText = "display:flex;align-items:center;flex-wrap:wrap;gap:4px;position:relative;z-index:1;";
+    if (wrapper.parentElement !== target) target.insertBefore(wrapper, target.firstChild);
     return true;
   }
 
@@ -1476,7 +1487,7 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
 
   function isAuthRoute() {
     var hash = normalizeRouteText(window.location.hash || "");
-    return routeHasToken(hash, "auth files") || routeHasToken(hash, "/auth") || routeHasToken(hash, "认证文件") || routeHasToken(hash, "凭证");
+    return routeHasToken(hash, "auth files") || routeHasToken(hash, "authentication files") || routeHasToken(hash, "/auth") || routeHasToken(hash, "认证文件") || routeHasToken(hash, "凭证") || activeAuthRouteFromNavigation();
   }
 
   function activeAuthRouteFromNavigation() {
@@ -1487,7 +1498,7 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
         var node = nodes[j];
         if (!isLayoutChrome(node) && !(node.getAttribute && normalizeText(node.getAttribute("role")) === "tab")) continue;
         var text = normalizeRouteText((node.innerText || node.textContent || "") + " " + (node.getAttribute ? (node.getAttribute("aria-label") || node.getAttribute("title") || "") : ""));
-        if (routeHasToken(text, "auth files") || routeHasToken(text, "认证文件") || routeHasToken(text, "凭证")) return true;
+        if (routeHasToken(text, "auth files") || routeHasToken(text, "authentication files") || routeHasToken(text, "认证文件") || routeHasToken(text, "凭证")) return true;
       }
     }
     return false;
@@ -1512,7 +1523,7 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
       for (var i = 0; i < titles.length; i++) {
         if (isLayoutChrome(titles[i])) continue;
         var title = normalizeText(titles[i].innerText || titles[i].textContent || "");
-        if (title.indexOf("auth files") === -1 && title.indexOf("认证文件") === -1 && title.indexOf("凭证") === -1) continue;
+        if (title.indexOf("auth files") === -1 && title.indexOf("authentication files") === -1 && title.indexOf("认证文件") === -1 && title.indexOf("凭证") === -1) continue;
         var container = titles[i];
         for (var depth = 0; depth < 5 && container && container !== root; depth++) {
           if (container.matches && container.matches("section,article,.card,.panel,[class*='card'],[class*='panel'],[class*='page']")) break;
@@ -1544,9 +1555,9 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
       var titles = roots[r].querySelectorAll(titleSelectors);
       for (var i = 0; i < titles.length; i++) {
         var title = titles[i];
-        if (isLayoutChrome(title) || (title.getClientRects && title.getClientRects().length === 0)) continue;
+        if ((title.closest && title.closest("[aria-hidden='true'],[inert]")) || (title.getAttribute && title.getAttribute("aria-hidden") === "true")) continue;
         var text = normalizeText(title.innerText || title.textContent || "");
-        if (text.indexOf("auth files") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1) return title;
+        if (text.indexOf("auth files") !== -1 || text.indexOf("authentication files") !== -1 || text.indexOf("认证文件") !== -1 || text.indexOf("凭证") !== -1) return title;
       }
     }
     return null;
@@ -1554,6 +1565,9 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
 
   function getActiveAuthTypeFilter() {
     var selectors = [
+      "[class*='tabActive']",
+      "[class*='tab-active']",
+      "[class*='tab'][aria-pressed='true']",
       "[class*='filterTagActive']",
       "[class*='filter-tag-active']",
       "[class*='filterTag'][aria-pressed='true']",
@@ -1563,7 +1577,8 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
     ];
     var roots = document.querySelectorAll("main,[role='main'],[class*='content'],[class*='page']");
     var activeFilterText = function (node) {
-      return normalizeText((node.innerText || node.textContent || "") + " " + (node.getAttribute ? (node.getAttribute("aria-label") || node.getAttribute("title") || "") : ""));
+      var attrs = node.getAttribute ? ((node.getAttribute("aria-label") || "") + " " + (node.getAttribute("title") || "") + " " + (node.getAttribute("data-provider") || "") + " " + (node.getAttribute("data-type") || "") + " " + (node.getAttribute("data-filter") || "")) : "";
+      return normalizeText((node.innerText || node.textContent || "") + " " + attrs);
     };
     var filterValue = function (text) {
       if (text.indexOf("codex") !== -1) return "codex";
@@ -1575,7 +1590,7 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
       for (var s = 0; s < selectors.length; s++) {
         var nodes = roots[r].querySelectorAll(selectors[s]);
         for (var i = 0; i < nodes.length; i++) {
-          if (isLayoutChrome(nodes[i]) || (nodes[i].getClientRects && nodes[i].getClientRects().length === 0)) continue;
+          if (nodes[i].getAttribute && nodes[i].getAttribute("aria-hidden") === "true") continue;
           return filterValue(activeFilterText(nodes[i]));
         }
       }
@@ -1586,8 +1601,9 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
       var button = buttons[j];
       var className = normalizeText(button.getAttribute("class") || "");
       var ariaCurrent = button.getAttribute("aria-current");
-      var active = className.indexOf("filtertagactive") !== -1 || className.indexOf("filter-tag-active") !== -1 || button.getAttribute("aria-pressed") === "true" || (ariaCurrent && ariaCurrent !== "false") || button.getAttribute("data-state") === "active";
-      if (!active || className.indexOf("filtertag") === -1 || isLayoutChrome(button) || (button.getClientRects && button.getClientRects().length === 0)) continue;
+      var active = className.indexOf("filtertagactive") !== -1 || className.indexOf("filter-tag-active") !== -1 || className.indexOf("tabactive") !== -1 || className.indexOf("tab-active") !== -1 || button.getAttribute("aria-pressed") === "true" || (ariaCurrent && ariaCurrent !== "false") || button.getAttribute("data-state") === "active";
+      var isProviderTab = className.indexOf("filtertag") !== -1 || className.indexOf("tab") !== -1 || button.getAttribute("data-provider") || button.getAttribute("data-type");
+      if (!active || !isProviderTab || (button.getAttribute && button.getAttribute("aria-hidden") === "true")) continue;
       return filterValue(activeFilterText(button));
     }
     return "all";
@@ -1595,14 +1611,20 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
 
   function mountBatchToolbar(wrapper) {
     var title = findAuthPageTitle();
-    if (!title) return false;
-    var header = title.closest ? title.closest("[class*='pageHeader'],[class*='page-header'],header") : null;
-    if (!header) header = title.parentElement;
-    if (!header || header === document.body) return false;
-    var position = window.getComputedStyle ? window.getComputedStyle(header).position : "static";
-    if (position === "static") header.style.position = "relative";
-    wrapper.style.cssText = "display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;position:absolute;top:0;right:0;max-width:100%;z-index:1;";
-    if (wrapper.parentElement !== header) header.appendChild(wrapper);
+    var header = title && title.closest ? title.closest("[class*='pageHeader'],[class*='page-header'],header") : null;
+    if (!header && title) header = title.parentElement;
+    if (header && header !== document.body) {
+      var position = window.getComputedStyle ? window.getComputedStyle(header).position : "static";
+      if (position === "static") header.style.position = "relative";
+      wrapper.style.cssText = "display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;position:absolute;top:0;right:0;max-width:100%;z-index:1;";
+      if (wrapper.parentElement !== header) header.appendChild(wrapper);
+      return true;
+    }
+
+    var target = document.querySelector("main") || document.querySelector("[role='main']") || document.querySelector("[class*='content']") || document.body;
+    if (!target) return false;
+    wrapper.style.cssText = "display:flex;align-items:center;flex-wrap:wrap;gap:4px;position:relative;z-index:1;";
+    if (wrapper.parentElement !== target) target.insertBefore(wrapper, target.firstChild);
     return true;
   }
 
