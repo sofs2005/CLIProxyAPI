@@ -116,18 +116,23 @@ func (a XAIAuthenticator) Login(ctx context.Context, cfg *config.Config, opts *L
 		metadata["sub"] = tokenStorage.Subject
 	}
 
+	attributes := map[string]string{
+		"auth_kind": "oauth",
+		"base_url":  tokenStorage.BaseURL,
+	}
+	if xaiauth.IsBFSAccessToken(tokenStorage.AccessToken) {
+		attributes[coreauth.AttributeXAIBFS] = "true"
+	}
+
 	fmt.Println("xAI authentication successful")
 
 	return &coreauth.Auth{
-		ID:       fileName,
-		Provider: a.Provider(),
-		FileName: fileName,
-		Label:    label,
-		Storage:  tokenStorage,
-		Metadata: metadata,
-		Attributes: map[string]string{
-			"auth_kind": "oauth",
-			"base_url":  tokenStorage.BaseURL,
-		},
+		ID:         fileName,
+		Provider:   a.Provider(),
+		FileName:   fileName,
+		Label:      label,
+		Storage:    tokenStorage,
+		Metadata:   metadata,
+		Attributes: attributes,
 	}, nil
 }

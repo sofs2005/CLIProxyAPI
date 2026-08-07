@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
+	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -133,6 +134,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
 				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
+				applyXAIBFSAttribute(auth, provider, metadata)
 			}
 			return auths, nil
 		}
@@ -222,6 +224,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
+	applyXAIBFSAttribute(a, provider, metadata)
 	// For codex auth files, extract plan_type from the JWT id_token.
 	if provider == "codex" {
 		if idTokenRaw, ok := metadata["id_token"].(string); ok && strings.TrimSpace(idTokenRaw) != "" {
@@ -264,6 +267,47 @@ func compactPluginAuths(auths []*coreauth.Auth) []*coreauth.Auth {
 		out = append(out, auth)
 	}
 	return out
+}
+
+func applyXAIBFSAttribute(auth *coreauth.Auth, provider string, metadata map[string]any) {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(provider), "xai") || !isOAuthMetadata(auth, metadata) {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	accessToken := metadataString(auth.Metadata, "access_token")
+	if accessToken == "" {
+		accessToken = metadataString(metadata, "access_token")
+	}
+	if xaiauth.IsBFSAccessToken(accessToken) {
+		auth.Attributes[coreauth.AttributeXAIBFS] = "true"
+		return
+	}
+	delete(auth.Attributes, coreauth.AttributeXAIBFS)
+}
+
+func isOAuthMetadata(auth *coreauth.Auth, metadata map[string]any) bool {
+	if auth != nil {
+		if kind := auth.AuthKind(); kind != "" {
+			return kind == coreauth.AuthKindOAuth
+		}
+	}
+	return strings.EqualFold(metadataString(metadata, coreauth.AttributeAuthKind), coreauth.AuthKindOAuth)
+}
+
+func metadataString(metadata map[string]any, key string) string {
+	if len(metadata) == 0 || key == "" {
+		return ""
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 // extractOAuthModelAliasesFromMetadata reads per-account model aliases from OAuth JSON metadata.

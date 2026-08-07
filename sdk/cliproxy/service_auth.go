@@ -25,6 +25,20 @@ func newDefaultAuthManager() *sdkAuth.Manager {
 	)
 }
 
+func (s *Service) observeCoreAuthUpdate(ctx context.Context, previous, current *coreauth.Auth) {
+	if s == nil || current == nil || current.ID == "" || isXAIBFSAuth(previous) == isXAIBFSAuth(current) {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.emitAuthUpdate(coreauth.WithSkipPersist(context.WithoutCancel(ctx)), watcher.AuthUpdate{
+		Action: watcher.AuthUpdateActionModify,
+		ID:     current.ID,
+		Auth:   current,
+	})
+}
+
 func (s *Service) ensureAuthUpdateQueue(ctx context.Context) {
 	if s == nil {
 		return

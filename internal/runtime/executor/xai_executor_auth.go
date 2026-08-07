@@ -16,6 +16,9 @@ import (
 func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	log.Debugf("xai executor: refresh called")
 	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
+		if err == nil {
+			applyXAIBFSAttribute(refreshed)
+		}
 		return refreshed, err
 	}
 	if auth == nil {
@@ -72,5 +75,20 @@ func (e *XAIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cl
 	if strings.TrimSpace(auth.Attributes["base_url"]) == "" {
 		auth.Attributes["base_url"] = xaiauth.DefaultAPIBaseURL
 	}
+	applyXAIBFSAttribute(auth)
 	return auth, nil
+}
+
+func applyXAIBFSAttribute(auth *cliproxyauth.Auth) {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "xai") || auth.AuthKind() != cliproxyauth.AuthKindOAuth {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	if xaiauth.IsBFSAccessToken(xaiMetadataString(auth.Metadata, "access_token")) {
+		auth.Attributes[cliproxyauth.AttributeXAIBFS] = "true"
+		return
+	}
+	delete(auth.Attributes, cliproxyauth.AttributeXAIBFS)
 }

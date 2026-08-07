@@ -88,6 +88,10 @@ type Hook interface {
 	OnResult(ctx context.Context, result Result)
 }
 
+// AuthUpdateObserver observes an auth before and after an update.
+// Observers run after the update has been persisted and the regular Hook has fired.
+type AuthUpdateObserver func(ctx context.Context, previous, current *Auth)
+
 // NoopHook provides optional hook defaults.
 type NoopHook struct{}
 
@@ -108,6 +112,7 @@ type Manager struct {
 	executors                 map[string]ProviderExecutor
 	selector                  Selector
 	hook                      Hook
+	authUpdateObservers       []AuthUpdateObserver
 	mu                        sync.RWMutex
 	configCooldownMu          sync.Mutex
 	auths                     map[string]*Auth
@@ -160,6 +165,30 @@ type Manager struct {
 	// refreshLocks serializes credential refresh per auth ID so concurrent
 	// 401 recoveries and auto-refresh workers do not race the same refresh_token.
 	refreshLocks sync.Map
+}
+
+// AddAuthUpdateObserver registers a callback that observes auth updates.
+func (m *Manager) AddAuthUpdateObserver(observer AuthUpdateObserver) {
+	if m == nil || observer == nil {
+		return
+	}
+	m.mu.Lock()
+	m.authUpdateObservers = append(m.authUpdateObservers, observer)
+	m.mu.Unlock()
+}
+
+func (m *Manager) notifyAuthUpdateObservers(ctx context.Context, previous, current *Auth) {
+	if m == nil || current == nil {
+		return
+	}
+	m.mu.RLock()
+	observers := append([]AuthUpdateObserver(nil), m.authUpdateObservers...)
+	m.mu.RUnlock()
+	for _, observer := range observers {
+		if observer != nil {
+			observer(ctx, previous.Clone(), current.Clone())
+		}
+	}
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
