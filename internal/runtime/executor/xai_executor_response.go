@@ -857,15 +857,45 @@ func xaiPatchCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]by
 // cli-chat-proxy ("Usage resets over a rolling 24-hour window").
 const xaiRateLimitCooldown = 24 * time.Hour
 
-// xaiStatusErr wraps upstream 429 bodies with a fixed 24h RetryAfter so the
-// auth manager can cool the credential for account rotation. Non-429 errors
-// stay without an explicit retry hint.
+// xaiStatusErr normalizes upstream xAI error bodies for conductor behavior:
+//   - credential invalidation (403 bad-credentials) is remapped to 401 so the
+//     existing OAuth refresh-once-and-retry path runs instead of payment cooldown
+//   - 429 responses carry a 24h RetryAfter hint for auth cooldown / account rotation
+//
+// The fixed 24h cooldown is kept for generic 429s as well as free-tier exhaustion.
 func xaiStatusErr(code int, body []byte) statusErr {
 	err := statusErr{code: code, msg: string(body)}
+	if code == http.StatusForbidden && isXAIBadCredentialsBody(body) {
+		// Upstream returns 403 for invalidated OAuth access tokens. Map to 401 so
+		// tryRefreshAfterUnauthorized / MarkResult unauthorized handling applies.
+		err.code = http.StatusUnauthorized
+		return err
+	}
 	if code != http.StatusTooManyRequests {
 		return err
 	}
 	d := xaiRateLimitCooldown
 	err.retryAfter = &d
 	return err
+}
+
+// isXAIBadCredentialsBody reports whether an xAI error body indicates an
+// invalidated/unusable OAuth access token rather than a generic permission or
+// payment failure. HTTP and websocket payloads both use this helper, so nested
+// error.code / error.message shapes are checked as well as flat bodies.
+func isXAIBadCredentialsBody(body []byte) bool {
+	for _, path := range []string{"code", "error.code", "body.error.code"} {
+		if strings.Contains(strings.ToLower(gjson.GetBytes(body, path).String()), "bad-credentials") {
+			return true
+		}
+	}
+	for _, path := range []string{"error", "error.message", "message", "body.error", "body.error.message"} {
+		msg := strings.ToLower(gjson.GetBytes(body, path).String())
+		if strings.Contains(msg, "access token could not be validated") {
+			return true
+		}
+	}
+	raw := strings.ToLower(string(body))
+	return strings.Contains(raw, "bad-credentials") ||
+		strings.Contains(raw, "access token could not be validated")
 }
