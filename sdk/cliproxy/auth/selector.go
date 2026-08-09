@@ -267,6 +267,31 @@ func preferCodexWebsocketAuths(ctx context.Context, provider string, available [
 	return available
 }
 
+// prioritizeCodexExpiringAuths orders available Codex credentials by their
+// nearest future primary quota-window reset. Credentials without reset metadata
+// remain stable and are placed after credentials with a known reset time.
+func prioritizeCodexExpiringAuths(provider string, available []*Auth, now time.Time) []*Auth {
+	if len(available) <= 1 || !strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		return available
+	}
+
+	sort.SliceStable(available, func(i, j int) bool {
+		resetI, okI := codexQuotaPrimaryResetAt(available[i], now)
+		resetJ, okJ := codexQuotaPrimaryResetAt(available[j], now)
+		switch {
+		case okI && okJ:
+			return resetI.Before(resetJ)
+		case okI:
+			return true
+		case okJ:
+			return false
+		default:
+			return false
+		}
+	})
+	return available
+}
+
 func collectAvailableByPriority(auths []*Auth, model string, now time.Time) (available map[int][]*Auth, cooldownCount int, earliest time.Time) {
 	available = make(map[int][]*Auth)
 	for i := 0; i < len(auths); i++ {
@@ -394,6 +419,7 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 		return nil, err
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	available = prioritizeCodexExpiringAuths(provider, available, now)
 	key := provider + ":" + canonicalModelKey(model)
 	s.mu.Lock()
 	if s.cursors == nil {
@@ -435,11 +461,13 @@ func positiveWeightAuths(auths []*Auth) []*Auth {
 // Pick selects the next available auth using smooth weighted round-robin.
 func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
 	_ = opts
-	available, errAvailable := getAvailableAuths(positiveWeightAuths(auths), provider, model, time.Now())
+	now := time.Now()
+	available, errAvailable := getAvailableAuths(positiveWeightAuths(auths), provider, model, now)
 	if errAvailable != nil {
 		return nil, errAvailable
 	}
 	available = preferCodexWebsocketAuths(ctx, provider, available)
+	available = prioritizeCodexExpiringAuths(provider, available, now)
 	stateModel := weightedSelectorStateModel(ctx, model)
 	key := provider + ":" + canonicalModelKey(stateModel)
 
@@ -552,7 +580,7 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
 	available = preferCodexWebsocketAuths(ctx, provider, available)
 	seed := s.shuffleSeed()
 	sort.SliceStable(available, func(i, j int) bool {
-		return lessFillFirstAuth(available[i], available[j], model, seed)
+		return lessFillFirstAuth(available[i], available[j], model, seed, now)
 	})
 	if len(available) == 1 {
 		return available[0], nil
@@ -593,11 +621,17 @@ func authFillFirstDemoted(auth *Auth, model string) bool {
 	return false
 }
 
+// isCodexAuth reports whether auth belongs to the Codex provider.
+func isCodexAuth(auth *Auth) bool {
+	return auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex")
+}
+
 // lessFillFirstAuth orders credentials for fill-first selection.
 // Non-demoted credentials always rank before demoted ones so consecutive failures
-// can move sticky fill preference onto the next healthy account. Within each group,
-// ordering stays on the process-local shuffle rank.
-func lessFillFirstAuth(left, right *Auth, model string, seed uint64) bool {
+// can move sticky fill preference onto the next healthy account. Codex credentials
+// with an earlier quota reset rank first within the same demotion group; the
+// process-local shuffle rank remains the final tie-breaker.
+func lessFillFirstAuth(left, right *Auth, model string, seed uint64, now time.Time) bool {
 	if left == nil || right == nil {
 		return left != nil
 	}
@@ -606,6 +640,20 @@ func lessFillFirstAuth(left, right *Auth, model string, seed uint64) bool {
 	if leftDemoted != rightDemoted {
 		return !leftDemoted
 	}
+
+	if isCodexAuth(left) && isCodexAuth(right) {
+		leftReset, leftOK := codexQuotaPrimaryResetAt(left, now)
+		rightReset, rightOK := codexQuotaPrimaryResetAt(right, now)
+		switch {
+		case leftOK && rightOK && !leftReset.Equal(rightReset):
+			return leftReset.Before(rightReset)
+		case leftOK && !rightOK:
+			return true
+		case !leftOK && rightOK:
+			return false
+		}
+	}
+
 	leftRank := fillFirstShuffleRank(seed, left.ID)
 	rightRank := fillFirstShuffleRank(seed, right.ID)
 	if leftRank == rightRank {
