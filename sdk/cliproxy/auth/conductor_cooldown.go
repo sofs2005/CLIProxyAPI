@@ -731,7 +731,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 
 		if result.Success {
-			if modelKey != "" {
+			if auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
+				// Retain active credential-scoped cooldown
+			} else if modelKey != "" {
 				state := ensureModelState(auth, modelKey)
 				resetModelState(state, now)
 				updateAggregatedAvailability(auth, now)
@@ -836,6 +838,34 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								shouldSuspendModel = true
 								setModelQuota = true
 							}
+							if result.CredentialScope && !disableCooling {
+								for _, otherState := range auth.ModelStates {
+									if otherState != nil && otherState != state {
+										otherState.Unavailable = true
+										otherState.Status = StatusError
+										otherNext := next
+										if otherState.Quota.Exceeded && otherState.Quota.NextRecoverAt.After(otherNext) {
+											otherNext = otherState.Quota.NextRecoverAt
+										}
+										otherState.NextRetryAfter = otherNext
+										otherState.Quota = QuotaState{
+											Exceeded:      true,
+											Reason:        "credential_quota",
+											NextRecoverAt: otherNext,
+											BackoffLevel:  backoffLevel,
+										}
+									}
+								}
+								auth.Unavailable = true
+								auth.Quota.Exceeded = true
+								auth.Quota.Reason = "credential_quota"
+								authNext := next
+								if auth.Quota.NextRecoverAt.After(authNext) {
+									authNext = auth.Quota.NextRecoverAt
+								}
+								auth.Quota.NextRecoverAt = authNext
+								auth.NextRetryAfter = authNext
+							}
 						case 408, 500, 502, 503, 504:
 							state.NextRetryAfter = recoverableFailureRetryAfter(now, disableCooling)
 							state.Unavailable = !state.NextRetryAfter.IsZero()
@@ -888,6 +918,18 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)
+	m.updateSessionAffinity(result)
+}
+
+func (m *Manager) updateSessionAffinity(result Result) {
+	if m == nil || m.selector == nil {
+		return
+	}
+	if affinity, ok := m.selector.(interface {
+		OnResult(Result)
+	}); ok && affinity != nil {
+		affinity.OnResult(result)
+	}
 }
 
 func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth *Auth, ephemeral bool) {
@@ -1248,6 +1290,10 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 	if auth == nil {
 		return
 	}
+	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
+		auth.Unavailable = true
+		return
+	}
 	if len(auth.ModelStates) == 0 {
 		clearAggregatedAvailability(auth)
 		return
@@ -1305,8 +1351,13 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 	if quotaExceeded {
 		auth.Quota.Exceeded = true
 		auth.Quota.Reason = "quota"
+		if auth.Quota.NextRecoverAt.After(quotaRecover) {
+			quotaRecover = auth.Quota.NextRecoverAt
+		}
 		auth.Quota.NextRecoverAt = quotaRecover
 		auth.Quota.BackoffLevel = maxBackoffLevel
+	} else if auth.Quota.Exceeded && auth.Quota.NextRecoverAt.After(now) {
+		// Retain active auth-level quota cooldown
 	} else {
 		auth.Quota.Exceeded = false
 		auth.Quota.Reason = ""
@@ -1580,6 +1631,17 @@ func retryAfterFromError(err error) *time.Duration {
 	return &value
 }
 
+func isCredentialScopedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	type credentialScopedProvider interface {
+		IsCredentialScoped() bool
+	}
+	var csp credentialScopedProvider
+	return errors.As(err, &csp) && csp != nil && csp.IsCredentialScoped()
+}
+
 func statusCodeFromResult(err *Error) int {
 	if err == nil {
 		return 0
@@ -1705,7 +1767,13 @@ func isRequestScopedNotFoundResultError(err *Error) bool {
 }
 
 func isRequestScopedResultError(err *Error) bool {
-	return err != nil && (err.IsRequestScoped() || isRequestScopedNotFoundResultError(err))
+	if err == nil {
+		return false
+	}
+	if err.IsRequestScoped() || isRequestScopedNotFoundResultError(err) {
+		return true
+	}
+	return isRequestInvalidError(err)
 }
 
 func isCountTokensEndpointNotFoundError(err error, requestedModel string) bool {
@@ -1920,7 +1988,19 @@ func isRequestInvalidError(err error) bool {
 	if isModelSupportError(err) {
 		return false
 	}
-	return clienterror.IsRequestFault(statusCodeFromError(err), err)
+	status := statusCodeFromError(err)
+	if clienterror.IsRequestFault(status, err) {
+		return true
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil && authErr.Message != "" {
+		// When authErr.Code is non-empty, Error() formats as "Code: Message" which
+		// breaks JSON parsing in clienterror. Re-evaluate against the raw Message body.
+		if clienterror.IsRequestFault(status, errors.New(authErr.Message)) {
+			return true
+		}
+	}
+	return false
 }
 
 func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Duration, now time.Time, disableCooling bool) {
@@ -2016,20 +2096,25 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 // Preference order: explicit RetryAfter, provider-specific policy (xAI 24h,
 // Codex codex_quota.reset_at), then exponential quota backoff.
 func resolveQuotaCooldown(auth *Auth, retryAfter *time.Duration, quota QuotaState, now time.Time) (time.Time, int) {
+	var next time.Time
+	level := quota.BackoffLevel
 	if retryAfter != nil {
 		wait := *retryAfter
 		if wait < 0 {
 			wait = 0
 		}
-		return now.Add(wait), quota.BackoffLevel
+		next = now.Add(wait)
+	} else if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "xai") {
+		next = now.Add(24 * time.Hour)
+	} else if ra := codexQuotaRetryAfterDuration(auth, now); ra != nil {
+		next = now.Add(*ra)
+	} else {
+		next, level = quotaCooldownAfterFailure(quota, now)
 	}
-	if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "xai") {
-		return now.Add(24 * time.Hour), quota.BackoffLevel
+	if quota.NextRecoverAt.After(next) {
+		next = quota.NextRecoverAt
 	}
-	if ra := codexQuotaRetryAfterDuration(auth, now); ra != nil {
-		return now.Add(*ra), quota.BackoffLevel
-	}
-	return quotaCooldownAfterFailure(quota, now)
+	return next, level
 }
 
 // quotaCooldownAfterFailure returns the recovery deadline and backoff level for
