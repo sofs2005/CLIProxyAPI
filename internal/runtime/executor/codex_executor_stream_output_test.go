@@ -180,7 +180,7 @@ func TestCodexExecutorExecuteExplicitTerminalFailureIsNotRequestScoped(t *testin
 	assertNotRequestScopedTestError(t, err)
 }
 
-func TestCodexExecutorExecuteMissingCompletionIsRequestScoped(t *testing.T) {
+func TestCodexExecutorExecuteMissingCompletionIsNotRequestScoped(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.5\"}}\n\n"))
@@ -206,10 +206,13 @@ func TestCodexExecutorExecuteMissingCompletionIsRequestScoped(t *testing.T) {
 	if got := statusCodeFromTestError(t, err); got != http.StatusRequestTimeout {
 		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusRequestTimeout, err)
 	}
-	assertRequestScopedTestError(t, err)
+	// An upstream stream that disconnects before response.completed is a
+	// connection/upstream failure, not a client request problem. It must NOT be
+	// request-scoped so the conductor can rotate to another credential.
+	assertNotRequestScopedTestError(t, err)
 }
 
-func TestCodexExecutorExecuteStreamMissingCompletionIsRequestScoped(t *testing.T) {
+func TestCodexExecutorExecuteStreamMissingCompletionIsNotRequestScoped(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.5\"}}\n\n"))
@@ -245,7 +248,10 @@ func TestCodexExecutorExecuteStreamMissingCompletionIsRequestScoped(t *testing.T
 	if got := statusCodeFromTestError(t, streamErr); got != http.StatusRequestTimeout {
 		t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusRequestTimeout, streamErr)
 	}
-	assertRequestScopedTestError(t, streamErr)
+	// Upstream stream disconnect before response.completed is a connection/upstream
+	// failure, not a client request problem. It must NOT be request-scoped so the
+	// conductor can rotate to another credential.
+	assertNotRequestScopedTestError(t, streamErr)
 }
 
 func TestCodexExecutorExecuteStreamExplicitTerminalFailureIsNotSuccessful(t *testing.T) {
@@ -338,7 +344,7 @@ func TestCodexAutoExecutorHTTPFallbackForwardsSequentialCutoffReasoningSummaryDe
 	}
 }
 
-func TestCodexExecutorTransportFailureBeforeTerminalIsRequestScoped(t *testing.T) {
+func TestCodexExecutorTransportFailureBeforeTerminalIsNotRequestScoped(t *testing.T) {
 	tests := []struct {
 		name   string
 		stream bool
@@ -387,7 +393,10 @@ func TestCodexExecutorTransportFailureBeforeTerminalIsRequestScoped(t *testing.T
 			if got := statusCodeFromTestError(t, terminalErr); got != http.StatusRequestTimeout {
 				t.Fatalf("status code = %d, want %d; err=%v", got, http.StatusRequestTimeout, terminalErr)
 			}
-			assertRequestScopedTestError(t, terminalErr)
+			// Transport failure before the terminal event is a connection/upstream
+			// failure, not a client request problem. It must NOT be request-scoped so
+			// the conductor can rotate to another credential.
+			assertNotRequestScopedTestError(t, terminalErr)
 		})
 	}
 }
