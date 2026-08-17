@@ -118,6 +118,7 @@ type Manager struct {
 	hook                      Hook
 	authUpdateObservers       []AuthUpdateObserver
 	mu                        sync.RWMutex
+	selectorMu                sync.Mutex
 	configCooldownMu          sync.Mutex
 	auths                     map[string]*Auth
 	scheduler                 *authScheduler
