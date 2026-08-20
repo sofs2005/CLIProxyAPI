@@ -391,7 +391,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
 				applyRequestScopedActionToResult(action, okAction, &result)
-				m.MarkResult(execCtx, result)
+				if isResponsesCompactAvailabilityNeutralError(execOpts, errExec, result.Error) {
+					m.recordAvailabilityNeutralResult(execCtx, result)
+				} else {
+					m.MarkResult(execCtx, result)
+				}
 				if okAction {
 					if isRequestScopedStop(action, okAction) {
 						return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
@@ -402,7 +406,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					}
 					continue
 				}
-				if isRequestInvalidError(errExec) {
+				if isResponsesCompactRequestFaultError(execOpts, errExec) || isRequestInvalidError(errExec) {
 					releaseInflight()
 					return cliproxyexecutor.Response{}, errExec
 				}
@@ -430,7 +434,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 				continue
 			}
-			if isRequestInvalidError(authErr) {
+			if isResponsesCompactRequestFaultError(opts, authErr) || isRequestInvalidError(authErr) {
 				releaseInflight()
 				return cliproxyexecutor.Response{}, authErr
 			}
