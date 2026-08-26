@@ -47,18 +47,13 @@ func codexQuotaMetadataBlocking(auth *Auth, now time.Time) (bool, time.Time) {
 }
 
 // codexQuotaRetryAfterDuration returns a RetryAfter-style duration derived from
-// codex_quota metadata when the primary window is exhausted.
+// codex_quota metadata when the primary window is exhausted. A non-exhausted
+// window (used_percent < 100) returns nil so a transient 429 falls back to the
+// regular exponential backoff instead of cooling until reset_at, which can be
+// hours away while quota is still available.
 func codexQuotaRetryAfterDuration(auth *Auth, now time.Time) *time.Duration {
 	blocked, resetAt := codexQuotaMetadataBlocking(auth, now)
 	if !blocked {
-		// Even without used_percent==100, a future reset_at is still the best
-		// recovery hint when the provider omitted resets_at on a 429.
-		if resetAt, ok := codexQuotaPrimaryResetAt(auth, now); ok {
-			wait := resetAt.Sub(now)
-			if wait > 0 {
-				return &wait
-			}
-		}
 		return nil
 	}
 	wait := resetAt.Sub(now)

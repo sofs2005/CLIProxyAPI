@@ -33,7 +33,7 @@ func TestCodexQuotaRetryAfterDuration_UsesPrimaryResetAt(t *testing.T) {
 	}
 }
 
-func TestCodexQuotaRetryAfterDuration_UnixResetAt(t *testing.T) {
+func TestCodexQuotaRetryAfterDuration_NonExhaustedWindowReturnsNil(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(1_700_000_000, 0).UTC()
@@ -52,12 +52,8 @@ func TestCodexQuotaRetryAfterDuration_UnixResetAt(t *testing.T) {
 		},
 	}
 
-	got := codexQuotaRetryAfterDuration(auth, now)
-	if got == nil {
-		t.Fatal("expected retry after from future reset_at even when used_percent < 100")
-	}
-	if *got != 45*time.Minute {
-		t.Fatalf("retry after = %v, want 45m", *got)
+	if got := codexQuotaRetryAfterDuration(auth, now); got != nil {
+		t.Fatalf("retry after = %v, want nil for non-exhausted window", *got)
 	}
 }
 
