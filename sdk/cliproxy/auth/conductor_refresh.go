@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ const (
 	refreshIneffectiveBackoff = 30 * time.Second
 	quotaBackoffBase          = time.Second
 	quotaBackoffMax           = 30 * time.Minute
+	minQuotaCooldownFloor     = 10 * time.Second
 	transientErrorCooldown    = time.Minute
 )
 
@@ -478,8 +480,8 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		}
 	}
 
-	cloned := auth.Clone()
-	updated, err := exec.Refresh(ctx, cloned)
+	base := auth.Clone()
+	updated, err := exec.Refresh(ctx, base.Clone())
 	if err != nil && errors.Is(err, context.Canceled) {
 		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
 		return nil, err
@@ -491,16 +493,36 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		shouldReschedule := false
 		m.mu.Lock()
 		if current := m.auths[id]; current != nil {
+			if base != nil && current.RegistrationEpoch != base.RegistrationEpoch {
+				m.mu.Unlock()
+				return nil, err
+			}
 			current.Generation++
 			current.UpdatedAt = now
 			current.LastError = refreshErrorFromError(err)
-			if unauthorized {
-				current.NextRefreshAfter = time.Time{}
+
+			hasValidAccessToken := current.HasValidAccessToken(now)
+			if !hasValidAccessToken {
 				current.Unavailable = true
 				current.Status = StatusError
-				current.StatusMessage = "unauthorized"
+				if unauthorized {
+					current.NextRefreshAfter = time.Time{}
+					current.StatusMessage = "unauthorized"
+				} else {
+					current.NextRefreshAfter = now.Add(refreshFailureBackoff)
+					current.StatusMessage = "token expired"
+				}
 			} else {
-				current.NextRefreshAfter = now.Add(refreshFailureBackoff)
+				// Access token remains valid. Preserve current in-flight/cooldown status without overwrite.
+				nextRetry := now.Add(refreshFailureBackoff)
+				if exp, ok := current.AccessTokenExpirationTime(); ok && !exp.IsZero() && nextRetry.After(exp) {
+					nextRetry = exp
+				}
+				current.NextRefreshAfter = nextRetry
+
+				if !current.Unavailable {
+					log.Warnf("credential refresh failed for %s (%s): %s; retaining active credential as access token is unexpired", current.Provider, current.ID, safeErrorDiagnosticForLog(err))
+				}
 			}
 			m.auths[id] = current
 			shouldReschedule = true
@@ -515,7 +537,7 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		return nil, err
 	}
 	if updated == nil {
-		updated = cloned
+		updated = base.Clone()
 	}
 	// Preserve runtime created by the executor during Refresh.
 	// If executor didn't set one, fall back to the previous runtime.
@@ -524,10 +546,18 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	}
 	updated.LastRefreshedAt = now
 	updated.NextRefreshAfter = time.Time{}
+	updated.LastError = nil
+	updated.StatusMessage = ""
+	updated.Unavailable = false
+	if updated.Status == StatusError || updated.Status == "" {
+		updated.Status = StatusActive
+	}
 	updated.UpdatedAt = now
 	// Token refresh only proves the OAuth credential is still valid.
 	// Clear 401/403 credential failure state, but keep quota/rate-limit
 	// (429) and other non-credential error/cooldown state intact.
+	// The signal is read from the pre-refresh snapshot: updated.LastError is
+	// cleared above.
 	modelsToResume := clearUnauthorizedModelStates(updated, now)
 	clearedCredentialFailure := false
 	if isCredentialAuthFailureError(updated.LastError) || isCredentialAuthFailureStatusMessage(updated.StatusMessage) {
@@ -547,14 +577,27 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 			updateAggregatedAvailability(updated, now)
 		}
 	}
+
+	// A successful token refresh proves the OAuth credential is still valid. Drop the
+	// auth-level cooldown carried over from the pre-refresh snapshot unless a
+	// non-credential failure (429 quota, transient 5xx) is still cooling down.
+	if !hasNonCredentialFailure(auth) {
+		updated.NextRetryAfter = time.Time{}
+	} else if !auth.NextRetryAfter.IsZero() && auth.NextRetryAfter.After(now) && !updated.Quota.Exceeded {
+		updated.NextRetryAfter = auth.NextRetryAfter
+	}
 	if m.shouldRefresh(updated, now) {
 		updated.NextRefreshAfter = now.Add(refreshIneffectiveBackoff)
 	}
-	saved, errUpdate := m.Update(ctx, updated)
-	targetAuth := saved
-	if targetAuth == nil {
-		targetAuth = updated
+	saved, errUpdate := m.UpdateRefreshedAuth(ctx, base, updated)
+	if errUpdate != nil {
+		log.Debugf("persist refreshed auth %s (%s) failed: %v", auth.Provider, auth.ID, errUpdate)
+		return nil, errUpdate
 	}
+	if saved == nil {
+		return nil, fmt.Errorf("auth %s not found", id)
+	}
+	targetAuth := saved
 	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(id)
 	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
 	for _, sm := range supportedModels {
@@ -566,11 +609,5 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	if targetAuth != nil && len(projections) > 0 {
 		registry.GetGlobalRegistry().ApplyClientModelProjections(id, regEpoch, targetAuth.Generation, projections)
 	}
-	if errUpdate != nil {
-		log.Debugf("persist refreshed auth %s (%s) failed: %v", auth.Provider, auth.ID, errUpdate)
-	}
-	if saved != nil {
-		return saved, nil
-	}
-	return updated.Clone(), nil
+	return saved.Clone(), nil
 }
