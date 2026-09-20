@@ -1868,6 +1868,12 @@ func hasUnauthorizedAuthFailure(auth *Auth) bool {
 	return false
 }
 
+// HasUnauthorizedAuthFailure reports whether the auth has a terminal unauthorized error
+// with no pending refresh scheduled.
+func HasUnauthorizedAuthFailure(auth *Auth) bool {
+	return hasUnauthorizedAuthFailure(auth)
+}
+
 // isCredentialAuthFailureError reports auth failures that token refresh can recover
 // from (401/403). Rate-limit and quota failures must not be treated as credential
 // errors: a successful OAuth refresh only proves the refresh_token still works.
