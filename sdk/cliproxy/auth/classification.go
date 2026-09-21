@@ -19,7 +19,6 @@ const (
 	AttributeConfigIndex      = "config_index"
 	AttributePath             = "path"
 	AttributeRuntimeOnly      = "runtime_only"
-	AttributeXAIBFS           = "xai_bfs"
 	AttributeSource           = "source"
 	AttributeSourceBackend    = "source_backend"
 	AttributeWeight           = "weight"

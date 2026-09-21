@@ -120,9 +120,6 @@ func (a XAIAuthenticator) Login(ctx context.Context, cfg *config.Config, opts *L
 		"auth_kind": "oauth",
 		"base_url":  tokenStorage.BaseURL,
 	}
-	if xaiauth.IsBFSAccessToken(tokenStorage.AccessToken) {
-		attributes[coreauth.AttributeXAIBFS] = "true"
-	}
 
 	fmt.Println("xAI authentication successful")
 

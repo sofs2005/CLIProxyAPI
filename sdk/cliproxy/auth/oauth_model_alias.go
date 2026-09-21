@@ -261,9 +261,6 @@ func (m *Manager) resolveOAuthUpstreamModel(auth *Auth, requestedModel string) s
 }
 
 func (m *Manager) resolveOAuthModelAliasWithResult(auth *Auth, requestedModel string) OAuthModelAliasResult {
-	if result, ok := resolveXAIBFSModelAlias(m, auth, requestedModel); ok {
-		return result
-	}
 	channel := modelAliasChannel(auth)
 	if channel == "" {
 		return OAuthModelAliasResult{}
@@ -272,51 +269,6 @@ func (m *Manager) resolveOAuthModelAliasWithResult(auth *Auth, requestedModel st
 		return result
 	}
 	return resolveUpstreamModelFromAliasTable(m, auth, requestedModel, channel)
-}
-
-func resolveXAIBFSModelAlias(m *Manager, auth *Auth, requestedModel string) (OAuthModelAliasResult, bool) {
-	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "xai") || auth.AuthKind() != AuthKindOAuth {
-		return OAuthModelAliasResult{}, false
-	}
-	if auth.Attributes == nil || !strings.EqualFold(strings.TrimSpace(auth.Attributes[AttributeXAIBFS]), "true") {
-		return OAuthModelAliasResult{}, false
-	}
-	requestedModel = strings.TrimSpace(requestedModel)
-	if requestedModel == "" {
-		return OAuthModelAliasResult{}, false
-	}
-	requestResult := thinking.ParseSuffix(requestedModel)
-	baseModel := strings.TrimSpace(requestResult.ModelName)
-	if baseModel == "" {
-		baseModel = requestedModel
-	}
-	if !strings.HasSuffix(strings.ToLower(baseModel), "-ks") {
-		return OAuthModelAliasResult{}, false
-	}
-	upstreamBase := strings.TrimSpace(baseModel[:len(baseModel)-len("-ks")])
-	if upstreamBase == "" {
-		return OAuthModelAliasResult{}, false
-	}
-	upstreamRequested := preserveResolvedModelSuffix(upstreamBase, requestResult)
-	if result := resolveUpstreamModelFromAliases(OAuthModelAliasesFromAttributes(authAttributes(auth)), upstreamRequested); result.UpstreamModel != "" {
-		return OAuthModelAliasResult{
-			UpstreamModel: result.UpstreamModel,
-			ForceMapping:  true,
-			OriginalAlias: requestedModel,
-		}, true
-	}
-	if result := resolveUpstreamModelFromAliasTable(m, auth, upstreamRequested, modelAliasChannel(auth)); result.UpstreamModel != "" {
-		return OAuthModelAliasResult{
-			UpstreamModel: result.UpstreamModel,
-			ForceMapping:  true,
-			OriginalAlias: requestedModel,
-		}, true
-	}
-	return OAuthModelAliasResult{
-		UpstreamModel: upstreamRequested,
-		ForceMapping:  true,
-		OriginalAlias: requestedModel,
-	}, true
 }
 
 func authAttributes(auth *Auth) map[string]string {
@@ -536,7 +488,7 @@ func OAuthModelAliasChannel(provider, authKind string) string {
 		return "claude"
 	case "codex":
 		return "codex"
-	case "aistudio", "antigravity", "kimi", "xai", "meta":
+	case "aistudio", "antigravity", "kimi", "kimi-ai", "kimi.ai", "kimi.com", "xai", "meta":
 		return provider
 	default:
 		return provider

@@ -208,6 +208,8 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"aistudio",
 		"antigravity",
 		"kimi",
+		"kimi-ai",
+		"kimi.ai",
 		"xai",
 		"devin",
 		"meta",
@@ -292,7 +294,7 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(cfg))
 	case "claude":
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(cfg))
-	case "kimi":
+	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(cfg))
 	case "xai":
 		if !forceReplace {
@@ -443,16 +445,6 @@ func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey st
 		}
 		clone := *model
 		clone.ID = modelID
-		if isXAIBFSAuth(a) {
-			bfsModelID := appendXAIBFSModelSuffix(modelID)
-			if strings.TrimSpace(clone.Name) == modelID || modelPathEndsWith(clone.Name, modelID) {
-				clone.Name = appendXAIBFSModelSuffix(clone.Name)
-			}
-			if strings.TrimSpace(clone.DisplayName) == modelID || modelPathEndsWith(clone.DisplayName, modelID) {
-				clone.DisplayName = appendXAIBFSModelSuffix(clone.DisplayName)
-			}
-			clone.ID = bfsModelID
-		}
 		normalizedModels = append(normalizedModels, &clone)
 	}
 	if len(normalizedModels) == 0 {
@@ -460,39 +452,6 @@ func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey st
 		return
 	}
 	GlobalModelRegistry().RegisterClient(a.ID, providerKey, normalizedModels)
-}
-
-func isXAIBFSAuth(a *coreauth.Auth) bool {
-	if a == nil || !strings.EqualFold(strings.TrimSpace(a.Provider), "xai") || a.AuthKind() != coreauth.AuthKindOAuth {
-		return false
-	}
-	return a.Attributes != nil && strings.EqualFold(strings.TrimSpace(a.Attributes[coreauth.AttributeXAIBFS]), "true")
-}
-
-func appendXAIBFSModelSuffix(modelID string) string {
-	modelID = strings.TrimSpace(modelID)
-	if modelID == "" || strings.HasSuffix(strings.ToLower(modelID), "-ks") {
-		return modelID
-	}
-	lastSlash := strings.LastIndex(modelID, "/")
-	if lastSlash < 0 {
-		return modelID + "-ks"
-	}
-	return modelID[:lastSlash+1] + modelID[lastSlash+1:] + "-ks"
-}
-
-func modelPathEndsWith(value, modelID string) bool {
-	value = strings.TrimSpace(value)
-	modelID = strings.TrimSpace(modelID)
-	if value == "" || modelID == "" {
-		return false
-	}
-	if strings.HasSuffix(value, "/"+modelID) {
-		return true
-	}
-	valueBase := value[strings.LastIndex(value, "/")+1:]
-	modelBase := modelID[strings.LastIndex(modelID, "/")+1:]
-	return strings.Contains(value, "/") && valueBase == modelBase
 }
 
 func (s *Service) pluginModelsForProvider(providerKey string) []*ModelInfo {

@@ -122,6 +122,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	if m.scheduler != nil {
 		m.scheduler.upsertAuth(authClone.Clone())
 	}
+	m.structuralEpoch.Add(1)
 	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
@@ -276,6 +277,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
 	if m.scheduler != nil {
 		m.scheduler.upsertAuth(authClone.Clone())
 	}
+	m.structuralEpoch.Add(1)
 	m.queueRefreshReschedule(auth.ID)
 	if !persistMetaMint {
 		_ = m.persist(ctx, auth)
@@ -336,6 +338,7 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 	if m.scheduler != nil {
 		m.scheduler.RecordRemovalTombstone(id, tombstoneEpoch)
 	}
+	m.structuralEpoch.Add(1)
 	m.queueRefreshUnschedule(id)
 	m.invalidateSessionAffinity(id)
 
@@ -418,6 +421,7 @@ func (m *Manager) Load(ctx context.Context) error {
 			m.scheduler.RecordRemovalTombstone(rt.id, rt.epoch)
 		}
 	}
+	m.structuralEpoch.Add(1)
 	m.syncScheduler()
 	return nil
 }

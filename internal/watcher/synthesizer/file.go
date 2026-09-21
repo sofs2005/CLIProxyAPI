@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
-	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
+	kimiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -142,7 +142,6 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
 				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
-				applyXAIBFSAttribute(auth, provider, metadata)
 				applyFingerprintProfileAttribute(auth, metadata)
 			}
 			return auths, nil
@@ -192,6 +191,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 
 	a := &coreauth.Auth{
 		ID:       id,
+		FileName: filepath.Base(fullPath),
 		Provider: provider,
 		Label:    label,
 		Prefix:   prefix,
@@ -233,8 +233,25 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
-	applyXAIBFSAttribute(a, provider, metadata)
 	applyFingerprintProfileAttribute(a, metadata)
+	// For Kimi auth files, preserve domain and base_url attributes.
+	if provider == "kimi" || provider == "kimi-ai" || provider == "kimi.ai" || provider == "kimi.com" {
+		if bu, ok := metadata["base_url"].(string); ok && strings.TrimSpace(bu) != "" {
+			a.Attributes["base_url"] = strings.TrimSpace(bu)
+		}
+		if dom, ok := metadata["domain"].(string); ok && strings.TrimSpace(dom) != "" {
+			a.Attributes["domain"] = strings.TrimSpace(dom)
+		}
+		resolvedDomain := kimiauth.ResolveKimiDomainFromAuth(a)
+		if a.Attributes["domain"] == "" {
+			a.Attributes["domain"] = resolvedDomain
+		} else {
+			a.Attributes["domain"] = kimiauth.NormalizeKimiDomain(a.Attributes["domain"])
+		}
+		if a.Attributes["base_url"] == "" {
+			a.Attributes["base_url"] = kimiauth.ResolveKimiAPIBaseURL(resolvedDomain)
+		}
+	}
 	// For codex auth files, extract plan_type from metadata or JWT id_token.
 	if provider == "codex" {
 		if ptRaw, ok := metadata["plan_type"].(string); ok && strings.TrimSpace(ptRaw) != "" {
@@ -279,47 +296,6 @@ func compactPluginAuths(auths []*coreauth.Auth) []*coreauth.Auth {
 		out = append(out, auth)
 	}
 	return out
-}
-
-func applyXAIBFSAttribute(auth *coreauth.Auth, provider string, metadata map[string]any) {
-	if auth == nil || !strings.EqualFold(strings.TrimSpace(provider), "xai") || !isOAuthMetadata(auth, metadata) {
-		return
-	}
-	if auth.Attributes == nil {
-		auth.Attributes = make(map[string]string)
-	}
-	accessToken := metadataString(auth.Metadata, "access_token")
-	if accessToken == "" {
-		accessToken = metadataString(metadata, "access_token")
-	}
-	if xaiauth.IsBFSAccessToken(accessToken) {
-		auth.Attributes[coreauth.AttributeXAIBFS] = "true"
-		return
-	}
-	delete(auth.Attributes, coreauth.AttributeXAIBFS)
-}
-
-func isOAuthMetadata(auth *coreauth.Auth, metadata map[string]any) bool {
-	if auth != nil {
-		if kind := auth.AuthKind(); kind != "" {
-			return kind == coreauth.AuthKindOAuth
-		}
-	}
-	return strings.EqualFold(metadataString(metadata, coreauth.AttributeAuthKind), coreauth.AuthKindOAuth)
-}
-
-func metadataString(metadata map[string]any, key string) string {
-	if len(metadata) == 0 || key == "" {
-		return ""
-	}
-	value, ok := metadata[key]
-	if !ok || value == nil {
-		return ""
-	}
-	if text, ok := value.(string); ok {
-		return strings.TrimSpace(text)
-	}
-	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 // extractOAuthModelAliasesFromMetadata reads per-account model aliases from OAuth JSON metadata.

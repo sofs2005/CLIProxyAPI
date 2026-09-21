@@ -2,6 +2,7 @@ package xai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -461,8 +462,18 @@ func buildTokenData(accessToken, refreshToken, idToken, tokenType string, expire
 }
 
 func parseJWTIdentity(token string) (email string, subject string) {
-	claims, ok := decodeJWTPayload(token)
-	if !ok {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return "", ""
+	}
+	payload := parts[1]
+	payload += strings.Repeat("=", (4-len(payload)%4)%4)
+	raw, err := base64.URLEncoding.DecodeString(payload)
+	if err != nil {
+		return "", ""
+	}
+	var claims map[string]any
+	if err = json.Unmarshal(raw, &claims); err != nil {
 		return "", ""
 	}
 	if v, ok := claims["email"].(string); ok {
