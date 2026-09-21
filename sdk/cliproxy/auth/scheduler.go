@@ -211,6 +211,30 @@ func (s *authScheduler) setFillFirstInflight(tracker *fillFirstInflightTracker, 
 	defer s.mu.Unlock()
 	s.fillFirstInflight = tracker
 	s.fillFirstMaxInflight = maxInflight
+	s.propagateFillFirstInflightLocked()
+}
+
+// propagateFillFirstInflightLocked pushes the scheduler-owned in-flight tracker down to
+// providers and their shards. Provider schedulers are created lazily, so this must run
+// both after configuration changes and whenever a shard is materialized.
+func (s *authScheduler) propagateFillFirstInflightLocked() {
+	if s == nil {
+		return
+	}
+	for _, provider := range s.providers {
+		if provider == nil {
+			continue
+		}
+		provider.fillFirstInflight = s.fillFirstInflight
+		provider.fillFirstMaxInflight = s.fillFirstMaxInflight
+		for _, shard := range provider.modelShards {
+			if shard == nil {
+				continue
+			}
+			shard.fillFirstInflight = s.fillFirstInflight
+			shard.fillFirstMaxInflight = s.fillFirstMaxInflight
+		}
+	}
 }
 
 // setSelector updates the active built-in strategy and resets mixed-provider cursors.
@@ -235,7 +259,7 @@ func (s *authScheduler) setSelector(selector Selector) {
 			}
 			shard.strategy = s.strategy
 			shard.fillFirstSeed = s.fillFirstSeed
-			shard.rebuildIndexesLocked()
+			shard.rebuildIndexesLocked(time.Now())
 		}
 	}
 	clear(s.mixedCursors)
@@ -1083,9 +1107,11 @@ func (s *authScheduler) ensureProviderLocked(providerKey string) *providerSchedu
 	providerState := s.providers[providerKey]
 	if providerState == nil {
 		providerState = &providerScheduler{
-			providerKey: providerKey,
-			auths:       make(map[string]*scheduledAuthMeta),
-			modelShards: make(map[string]*modelScheduler),
+			providerKey:          providerKey,
+			auths:                make(map[string]*scheduledAuthMeta),
+			modelShards:          make(map[string]*modelScheduler),
+			fillFirstInflight:    s.fillFirstInflight,
+			fillFirstMaxInflight: s.fillFirstMaxInflight,
 		}
 		s.providers[providerKey] = providerState
 	}
@@ -1313,7 +1339,7 @@ func (m *modelScheduler) upsertEntryLocked(meta *scheduledAuthMeta, now time.Tim
 	if ok && previousState == entry.state && previousNextRetryAt.Equal(entry.nextRetryAt) && previousDemoted == entry.fillFirstDemoted && previousPriority == meta.priority && previousWebsocketEnabled == meta.websocketEnabled {
 		return
 	}
-	m.rebuildIndexesLocked()
+	m.rebuildIndexesLocked(now)
 }
 
 // removeEntryLocked deletes one auth entry and rebuilds the shard indexes if needed.
@@ -1325,7 +1351,7 @@ func (m *modelScheduler) removeEntryLocked(authID string) {
 		return
 	}
 	delete(m.entries, authID)
-	m.rebuildIndexesLocked()
+	m.rebuildIndexesLocked(time.Now())
 }
 
 // demoteExpiredTokensLocked checks ready auths and demotes any whose access token has expired.
@@ -1392,7 +1418,7 @@ func (m *modelScheduler) promoteExpiredLocked(now time.Time) {
 		changed = true
 	}
 	if changed {
-		m.rebuildIndexesLocked()
+		m.rebuildIndexesLocked(now)
 	}
 }
 
@@ -1637,8 +1663,35 @@ func (m *modelScheduler) availabilitySummaryLocked(predicate func(*scheduledAuth
 	return total, cooldownCount, unauthorizedCount, earliest
 }
 
+// lessScheduledAuthForCodexReset orders two ready Codex credentials by their nearest
+// future primary quota-window reset, matching the preference applied by
+// lessFillFirstAuth on the legacy selector path. The second result reports whether the
+// comparison decided the order; non-Codex credentials and pairs without a usable reset
+// leave ordering to the caller's regular tie-breakers.
+func lessScheduledAuthForCodexReset(left, right *scheduledAuth, now time.Time) (bool, bool) {
+	if left == nil || right == nil || left.auth == nil || right.auth == nil {
+		return false, false
+	}
+	if !isCodexAuth(left.auth) || !isCodexAuth(right.auth) {
+		return false, false
+	}
+	leftReset, leftOK := codexQuotaPrimaryResetAt(left.auth, now)
+	rightReset, rightOK := codexQuotaPrimaryResetAt(right.auth, now)
+	switch {
+	case leftOK && rightOK && !leftReset.Equal(rightReset):
+		return leftReset.Before(rightReset), true
+	case leftOK && !rightOK:
+		return true, true
+	case !leftOK && rightOK:
+		return false, true
+	}
+	return false, false
+}
+
 // rebuildIndexesLocked reconstructs ready and blocked views from the current entry map.
-func (m *modelScheduler) rebuildIndexesLocked() {
+// now is used to resolve Codex quota reset times encoded in auth metadata; the resulting
+// order is a snapshot taken at this instant and is refreshed on the next rebuild.
+func (m *modelScheduler) rebuildIndexesLocked(now time.Time) {
 	cursorStates := make(map[int]readyBucketCursorState, len(m.readyByPriority))
 	for priority, bucket := range m.readyByPriority {
 		if bucket == nil {
@@ -1677,6 +1730,9 @@ func (m *modelScheduler) rebuildIndexesLocked() {
 				}
 				if left.fillFirstDemoted != right.fillFirstDemoted {
 					return !left.fillFirstDemoted
+				}
+				if resetLess, decided := lessScheduledAuthForCodexReset(left, right, now); decided {
+					return resetLess
 				}
 				leftRank := fillFirstShuffleRank(m.fillFirstSeed, left.auth.ID)
 				rightRank := fillFirstShuffleRank(m.fillFirstSeed, right.auth.ID)
