@@ -47,6 +47,21 @@ func registerResetAuths(t *testing.T, manager *Manager, provider, model string, 
 	}
 }
 
+// codexResetMetadata builds the codex_quota metadata shape read by codexQuotaPrimaryResetAt,
+// shared with selector_codex_reset_test.go's newCodexAuthWithReset.
+func codexResetMetadata(resetAt time.Time) map[string]any {
+	return map[string]any{
+		"codex_quota": map[string]any{
+			"rate_limit": map[string]any{
+				"primary_window": map[string]any{
+					"used_percent": 50,
+					"reset_at":     resetAt.Format(time.RFC3339Nano),
+				},
+			},
+		},
+	}
+}
+
 // codexResetCodexAuth builds a Codex credential carrying reset_at, using the shared
 // metadata shape from selector_codex_reset_test.go.
 func codexResetCodexAuth(prefix, suffix string, resetAt *time.Time) *Auth {
@@ -156,6 +171,40 @@ func TestManagerFillFirst_CodexDemotionOutranksReset(t *testing.T) {
 		[]string{"demote-middle", "demote-near"})
 }
 
+func TestManagerFillFirst_CodexResetRefreshReordersOnMetadataUpdate(t *testing.T) {
+	t.Parallel()
+
+	const model = "codex-reset-refresh-model"
+	manager, _ := newFillFirstResetManager(t)
+	manager.RegisterExecutor(schedulerProviderTestExecutor{provider: "codex"})
+
+	now := time.Now()
+	nearReset := now.Add(time.Hour)
+	farReset := now.Add(3 * time.Hour)
+
+	near := codexResetCodexAuth("refresh", "near", &nearReset)
+	far := codexResetCodexAuth("refresh", "far", &farReset)
+	registerResetAuths(t, manager, "codex", model, near, far)
+
+	assertPickOrder(t, pickNextIDs(t, manager, "codex", model, 1), []string{"refresh-near"})
+
+	// Swap the two reset times through Manager.Update, exactly as the management-side quota
+	// refresh does. Nothing else about the credential changes: same state, same priority,
+	// same cooldown, same demotion flag. The reordering therefore depends entirely on the
+	// cached reset taking part in upsertEntryLocked's short-circuit comparison.
+	nearReset, farReset = farReset, nearReset
+	near.Metadata = codexResetMetadata(nearReset)
+	far.Metadata = codexResetMetadata(farReset)
+	if _, errUpdate := manager.Update(context.Background(), near); errUpdate != nil {
+		t.Fatalf("Update(refresh-near) error = %v", errUpdate)
+	}
+	if _, errUpdate := manager.Update(context.Background(), far); errUpdate != nil {
+		t.Fatalf("Update(refresh-far) error = %v", errUpdate)
+	}
+
+	assertPickOrder(t, pickNextIDs(t, manager, "codex", model, 1), []string{"refresh-far"})
+}
+
 func TestManagerFillFirst_NonCodexIgnoresResetMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -250,22 +299,34 @@ func TestLessScheduledAuthForCodexReset_OnlyDecidesForCodex(t *testing.T) {
 	nearReset := now.Add(time.Hour)
 	farReset := now.Add(2 * time.Hour)
 
-	left := &scheduledAuth{meta: &scheduledAuthMeta{}, auth: newCodexAuthWithReset("cmp-near", &nearReset)}
-	right := &scheduledAuth{meta: &scheduledAuthMeta{}, auth: newCodexAuthWithReset("cmp-far", &farReset)}
+	// Only Codex credentials ever get a cached reset, so a populated codexResetAt is itself
+	// the provider gate: non-Codex metas keep it zero and are ignored.
+	near := &scheduledAuth{meta: &scheduledAuthMeta{codexResetAt: nearReset}, auth: &Auth{ID: "cmp-near", Provider: "codex"}}
+	far := &scheduledAuth{meta: &scheduledAuthMeta{codexResetAt: farReset}, auth: &Auth{ID: "cmp-far", Provider: "codex"}}
 
-	less, decided := lessScheduledAuthForCodexReset(left, right, now)
+	less, decided := lessScheduledAuthForCodexReset(near, far, now)
 	if !decided || !less {
 		t.Fatalf("codex pair: less = %v, decided = %v, want true, true", less, decided)
 	}
 
-	geminiRight := &scheduledAuth{meta: &scheduledAuthMeta{}, auth: &Auth{ID: "cmp-gemini", Provider: "gemini"}}
-	if _, decided = lessScheduledAuthForCodexReset(geminiRight, geminiRight, now); decided {
+	// A gemini credential carrying codex_quota metadata still caches nothing, so it must
+	// never participate in the ordering.
+	gemini := &scheduledAuth{meta: &scheduledAuthMeta{}, auth: &Auth{ID: "cmp-gemini", Provider: "gemini"}}
+	if _, decided = lessScheduledAuthForCodexReset(gemini, gemini, now); decided {
 		t.Fatal("non-codex pair must leave ordering to the caller's tie-breakers")
 	}
 
-	// Real cross-provider shards never mix providers, but a mixed pair must still not claim
-	// a decision: the comparison is only defined when both sides are Codex.
-	if _, decided = lessScheduledAuthForCodexReset(left, geminiRight, now); decided {
-		t.Fatal("mixed-provider pair must not be decided by the Codex reset comparator")
+	// A cached reset that has already elapsed must degrade to unknown, exactly as a freshly
+	// parsed one would, so it cannot keep outranking a live reset after the fact.
+	stale := &scheduledAuth{
+		meta: &scheduledAuthMeta{codexResetAt: now.Add(-time.Hour)},
+		auth: &Auth{ID: "cmp-stale", Provider: "codex"},
+	}
+	less, decided = lessScheduledAuthForCodexReset(stale, far, now)
+	if !decided || less {
+		t.Fatalf("stale vs live: less = %v, decided = %v, want false, true", less, decided)
+	}
+	if _, decided = lessScheduledAuthForCodexReset(stale, stale, now); decided {
+		t.Fatal("two stale resets must leave ordering to the caller's tie-breakers")
 	}
 }

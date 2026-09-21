@@ -75,6 +75,12 @@ type scheduledAuthMeta struct {
 	websocketEnabled  bool
 	supportedModelSet map[string]struct{}
 	registryEpoch     uint64
+	// codexResetAt caches the Codex primary quota-window reset parsed from auth metadata
+	// at construction time. Zero means the credential is not Codex, records no usable
+	// reset, or the recorded reset had already elapsed. Parsing it here keeps the sort
+	// comparator free of repeated metadata decoding and lets upsertEntryLocked detect a
+	// reset-only refresh, which carries no other ordering-visible change.
+	codexResetAt time.Time
 }
 
 // modelScheduler tracks ready and blocked auths for one provider/model combination.
@@ -924,7 +930,7 @@ func (s *authScheduler) upsertAuthRebuildLocked(auth *Auth, existingMetas map[st
 
 	providerState := s.ensureProviderLocked(providerKey)
 	regEpoch := registry.GetGlobalRegistry().ClientRegistrationEpoch(authID)
-	meta := buildScheduledAuthMetaWithModelSet(authToSchedule, supportedModelSetForAuth(authToSchedule.ID), regEpoch)
+	meta := buildScheduledAuthMetaWithModelSet(authToSchedule, supportedModelSetForAuth(authToSchedule.ID), regEpoch, now)
 	s.authProviders[authID] = providerKey
 	providerState.upsertAuthForModelsLocked(meta, nil, true, now)
 }
@@ -963,7 +969,7 @@ func (s *authScheduler) upsertAuthLifecycleLocked(auth *Auth, now time.Time) {
 
 	providerState := s.ensureProviderLocked(providerKey)
 	regEpoch := registry.GetGlobalRegistry().ClientRegistrationEpoch(authID)
-	meta := buildScheduledAuthMetaWithModelSet(auth, supportedModelSetForAuth(auth.ID), regEpoch)
+	meta := buildScheduledAuthMetaWithModelSet(auth, supportedModelSetForAuth(auth.ID), regEpoch, now)
 	s.authProviders[authID] = providerKey
 	providerState.strategy = s.strategy
 	providerState.fillFirstSeed = s.fillFirstSeed
@@ -1047,7 +1053,7 @@ func (s *authScheduler) upsertAuthResultLocked(auth *Auth, targetModels []string
 		modelSet = supportedModelSetForAuth(auth.ID)
 	}
 
-	meta := buildScheduledAuthMetaWithModelSet(auth, modelSet, currentRegEpoch)
+	meta := buildScheduledAuthMetaWithModelSet(auth, modelSet, currentRegEpoch, now)
 	s.authProviders[authID] = providerKey
 
 	// Check whether credential-level availability transitioned between blocked and unblocked.
@@ -1125,16 +1131,16 @@ func buildScheduledAuthMeta(auth *Auth) *scheduledAuthMeta {
 		authID = auth.ID
 	}
 	regEpoch := registry.GetGlobalRegistry().ClientRegistrationEpoch(authID)
-	return buildScheduledAuthMetaWithModelSet(auth, supportedModelSetForAuth(authID), regEpoch)
+	return buildScheduledAuthMetaWithModelSet(auth, supportedModelSetForAuth(authID), regEpoch, time.Now())
 }
 
-func buildScheduledAuthMetaWithModelSet(auth *Auth, modelSet map[string]struct{}, regEpoch uint64) *scheduledAuthMeta {
+func buildScheduledAuthMetaWithModelSet(auth *Auth, modelSet map[string]struct{}, regEpoch uint64, now time.Time) *scheduledAuthMeta {
 	providerKey := executorKeyFromAuth(auth)
 	var clonedAuth *Auth
 	if auth != nil {
 		clonedAuth = auth.Clone()
 	}
-	return &scheduledAuthMeta{
+	meta := &scheduledAuthMeta{
 		auth:              clonedAuth,
 		providerKey:       providerKey,
 		priority:          authPriority(auth),
@@ -1143,6 +1149,14 @@ func buildScheduledAuthMetaWithModelSet(auth *Auth, modelSet map[string]struct{}
 		supportedModelSet: modelSet,
 		registryEpoch:     regEpoch,
 	}
+	// The Codex gate lives here rather than in the comparator: a cached reset is set only
+	// for Codex credentials, so non-Codex metadata can never influence ordering.
+	if isCodexAuth(clonedAuth) {
+		if resetAt, ok := codexQuotaPrimaryResetAt(clonedAuth, now); ok {
+			meta.codexResetAt = resetAt
+		}
+	}
+	return meta
 }
 
 // supportedModelSetForAuth snapshots the registry models currently registered for an auth.
@@ -1313,9 +1327,11 @@ func (m *modelScheduler) upsertEntryLocked(meta *scheduledAuthMeta, now time.Tim
 	previousDemoted := entry.fillFirstDemoted
 	previousPriority := 0
 	previousWebsocketEnabled := false
+	previousCodexResetAt := time.Time{}
 	if entry.meta != nil {
 		previousPriority = entry.meta.priority
 		previousWebsocketEnabled = entry.meta.websocketEnabled
+		previousCodexResetAt = entry.meta.codexResetAt
 	}
 
 	entry.meta = meta
@@ -1336,7 +1352,10 @@ func (m *modelScheduler) upsertEntryLocked(meta *scheduledAuthMeta, now time.Tim
 		entry.nextRetryAt = next
 	}
 
-	if ok && previousState == entry.state && previousNextRetryAt.Equal(entry.nextRetryAt) && previousDemoted == entry.fillFirstDemoted && previousPriority == meta.priority && previousWebsocketEnabled == meta.websocketEnabled {
+	// A reset-only quota refresh changes nothing else observable here, so the cached reset
+	// must take part in the short-circuit or the new ordering would wait for an unrelated
+	// state change to reach the indexes.
+	if ok && previousState == entry.state && previousNextRetryAt.Equal(entry.nextRetryAt) && previousDemoted == entry.fillFirstDemoted && previousPriority == meta.priority && previousWebsocketEnabled == meta.websocketEnabled && previousCodexResetAt.Equal(meta.codexResetAt) {
 		return
 	}
 	m.rebuildIndexesLocked(now)
@@ -1663,29 +1682,43 @@ func (m *modelScheduler) availabilitySummaryLocked(predicate func(*scheduledAuth
 	return total, cooldownCount, unauthorizedCount, earliest
 }
 
-// lessScheduledAuthForCodexReset orders two ready Codex credentials by their nearest
-// future primary quota-window reset, matching the preference applied by
-// lessFillFirstAuth on the legacy selector path. The second result reports whether the
-// comparison decided the order; non-Codex credentials and pairs without a usable reset
-// leave ordering to the caller's regular tie-breakers.
+// codexResetAtForOrdering returns the credential's cached Codex primary-window reset when
+// it is still in the future relative to the rebuild instant. The cached value is parsed
+// once at meta construction; re-checking freshness here is a plain time comparison, so an
+// expired reset still degrades to "unknown" at every rebuild exactly as it would if the
+// metadata were re-decoded.
+func codexResetAtForOrdering(entry *scheduledAuth, now time.Time) time.Time {
+	if entry == nil || entry.meta == nil {
+		return time.Time{}
+	}
+	resetAt := entry.meta.codexResetAt
+	if resetAt.IsZero() || !resetAt.After(now) {
+		return time.Time{}
+	}
+	return resetAt
+}
+
+// lessScheduledAuthForCodexReset orders two ready credentials by their nearest future
+// Codex primary quota-window reset, matching the preference applied by lessFillFirstAuth
+// on the legacy selector path. The second result reports whether the comparison decided
+// the order; pairs without a usable reset leave ordering to the caller's regular
+// tie-breakers. Only Codex credentials ever carry a cached reset, so non-Codex shards
+// keep their existing order.
 func lessScheduledAuthForCodexReset(left, right *scheduledAuth, now time.Time) (bool, bool) {
-	if left == nil || right == nil || left.auth == nil || right.auth == nil {
-		return false, false
-	}
-	if !isCodexAuth(left.auth) || !isCodexAuth(right.auth) {
-		return false, false
-	}
-	leftReset, leftOK := codexQuotaPrimaryResetAt(left.auth, now)
-	rightReset, rightOK := codexQuotaPrimaryResetAt(right.auth, now)
+	leftReset := codexResetAtForOrdering(left, now)
+	rightReset := codexResetAtForOrdering(right, now)
 	switch {
-	case leftOK && rightOK && !leftReset.Equal(rightReset):
-		return leftReset.Before(rightReset), true
-	case leftOK && !rightOK:
-		return true, true
-	case !leftOK && rightOK:
+	case leftReset.IsZero() && rightReset.IsZero():
+		return false, false
+	case leftReset.IsZero():
 		return false, true
+	case rightReset.IsZero():
+		return true, true
 	}
-	return false, false
+	if leftReset.Equal(rightReset) {
+		return false, false
+	}
+	return leftReset.Before(rightReset), true
 }
 
 // rebuildIndexesLocked reconstructs ready and blocked views from the current entry map.
