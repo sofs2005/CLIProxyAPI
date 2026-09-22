@@ -367,8 +367,8 @@ func (f *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 // for Anthropic and a Chrome profile for ChatGPT, with a standard-transport
 // fallback for other hosts.
 func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
-	// Resolve the effective proxy following credential > provider > global priority.
-	proxyURL := ResolveEffectiveProxy(cfg, auth)
+	// Resolve the effective proxy following request > credential > provider > global priority.
+	proxyURL := ResolveEffectiveProxy(ctx, cfg, auth)
 
 	var ctxRoundTripper http.RoundTripper
 	if ctx != nil {
