@@ -403,6 +403,11 @@ codex:
   # than cooling down the entire credential across all sibling models.
   # Default: false
   model-level-cooling: false
+  # Model used by the management panel's "Refresh Free Accounts" action, which sends a
+  # minimal request per free-plan Codex account to start a new usage cycle.
+  # Empty falls back to "gpt-6-luna"; set this to upgrade the refresh model without code changes.
+  # Default: "gpt-6-luna"
+  free-refresh-model: "gpt-6-luna"
   # Terminate and relay Codex Live WebRTC audio and DataChannel traffic in this process.
   # This requires inbound UDP reachability. Keep disabled to preserve direct media behavior.
   live-media-relay:

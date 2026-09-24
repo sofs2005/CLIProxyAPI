@@ -741,6 +741,12 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quotaSupported .
 	if !nextRetryAfter.IsZero() {
 		entry["next_retry_after"] = nextRetryAfter
 	}
+	// Expose the Codex primary quota-window reset so the management panel can
+	// order credentials by how soon their usage window reopens. Only a future,
+	// parseable reset is reported; unknown or expired values omit the field.
+	if resetAt, ok := coreauth.CodexPrimaryResetAt(auth, time.Now().UTC()); ok {
+		entry["codex_reset_at"] = resetAt.Format(time.RFC3339)
+	}
 	if path != "" {
 		entry["path"] = path
 		entry["source"] = "file"

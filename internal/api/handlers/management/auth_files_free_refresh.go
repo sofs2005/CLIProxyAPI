@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	codexexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -402,6 +403,16 @@ func (h *Handler) RefreshCodexFreeAccounts(c *gin.Context) {
 	})
 }
 
+// codexFreeRefreshModel returns the model used for the management free-plan
+// refresh ping. It is resolved once per call so the payload, the executor
+// request, and the cooldown record always agree on the same model.
+func (h *Handler) codexFreeRefreshModel() string {
+	if h == nil || h.cfg == nil {
+		return config.DefaultCodexFreeRefreshModel
+	}
+	return h.cfg.Codex.FreeRefreshModelOrDefault()
+}
+
 // runCodexFreeRefresh processes each target account sequentially.
 func (h *Handler) runCodexFreeRefresh(taskID string, task *codexFreeRefreshTask, targets []*coreauth.Auth) {
 	defer func() {
@@ -410,18 +421,20 @@ func (h *Handler) runCodexFreeRefresh(taskID string, task *codexFreeRefreshTask,
 		task.mu.Unlock()
 	}()
 
+	refreshModel := h.codexFreeRefreshModel()
+
 	for i, auth := range targets {
 		result := codexFreeRefreshResult{
 			Name:  auth.FileName,
 			Email: authEmail(auth),
 		}
 
-		errPing := h.pingCodexAccount(auth)
+		errPing := h.pingCodexAccount(auth, refreshModel)
 		if errPing != nil {
 			result.Success = false
 			result.Error = errPing.Error()
 			log.WithError(errPing).WithField("auth", auth.FileName).Warn("codex free refresh ping failed")
-			h.markRefreshPingFailure(auth, "gpt-5.6-luna", errPing)
+			h.markRefreshPingFailure(auth, refreshModel, errPing)
 		} else {
 			result.Success = true
 			now := time.Now().UTC()
@@ -449,21 +462,24 @@ func (h *Handler) runCodexFreeRefresh(taskID string, task *codexFreeRefreshTask,
 	}
 }
 
-func minimalCodexRefreshPayload() []byte {
-	return []byte(`{"model":"gpt-5.6-luna","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true,"store":false,"instructions":""}`)
+func minimalCodexRefreshPayload(model string) []byte {
+	return []byte(fmt.Sprintf(`{"model":%q,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true,"store":false,"instructions":""}`, model))
 }
 
 // pingCodexAccount sends a minimal chat request to activate the account cycle.
 // It reuses the existing CodexExecutor to ensure all headers, token resolution,
 // proxy transport, and request body formatting are identical to normal requests.
-func (h *Handler) pingCodexAccount(auth *coreauth.Auth) error {
+func (h *Handler) pingCodexAccount(auth *coreauth.Auth, model string) error {
 	executor := codexexecutor.NewCodexExecutor(h.cfg)
 
-	minimalPayload := minimalCodexRefreshPayload()
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = config.DefaultCodexFreeRefreshModel
+	}
 
 	req := cliproxyexecutor.Request{
-		Model:   "gpt-5.6-luna",
-		Payload: minimalPayload,
+		Model:   model,
+		Payload: minimalCodexRefreshPayload(model),
 		Format:  sdktranslator.FromString("codex"),
 	}
 	opts := cliproxyexecutor.Options{

@@ -220,6 +220,27 @@ type CodexConfig struct {
 	// ResponseSteering enables full-duplex Codex WebSockets, bound to one
 	// upstream model/account/socket for their entire lifetime. Default is false.
 	ResponseSteering bool `yaml:"response-steering" json:"response-steering"`
+	// FreeRefreshModel is the model used by the management panel's "Refresh Free
+	// Accounts" action, which sends a minimal request per free-plan Codex account
+	// to start a new usage cycle. Empty falls back to DefaultCodexFreeRefreshModel,
+	// so a model upgrade only requires a config change.
+	FreeRefreshModel string `yaml:"free-refresh-model,omitempty" json:"free-refresh-model,omitempty"`
+}
+
+// DefaultCodexFreeRefreshModel is the model used by the management panel's
+// "Refresh Free Accounts" action when codex.free-refresh-model is unset.
+const DefaultCodexFreeRefreshModel = "gpt-6-luna"
+
+// FreeRefreshModelOrDefault returns the configured free-plan refresh model,
+// falling back to DefaultCodexFreeRefreshModel when unset.
+func (c *CodexConfig) FreeRefreshModelOrDefault() string {
+	if c == nil {
+		return DefaultCodexFreeRefreshModel
+	}
+	if model := strings.TrimSpace(c.FreeRefreshModel); model != "" {
+		return model
+	}
+	return DefaultCodexFreeRefreshModel
 }
 
 // DefaultCodexStreamBootstrapTimeout is the default maximum duration to buffer bootstrap events.

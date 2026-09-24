@@ -25,6 +25,18 @@ func codexQuotaPrimaryResetAt(auth *Auth, now time.Time) (time.Time, bool) {
 	return resetAt, true
 }
 
+// CodexPrimaryResetAt exposes the earliest future primary-window reset time
+// recorded in an auth's codex_quota metadata. It reports false when the
+// credential is not Codex, has no primary window, or the recorded reset is
+// missing, unparseable, or already in the past, so callers never see a stale
+// deadline as a live one.
+func CodexPrimaryResetAt(auth *Auth, now time.Time) (time.Time, bool) {
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return time.Time{}, false
+	}
+	return codexQuotaPrimaryResetAt(auth, now)
+}
+
 // codexQuotaMetadataBlocking reports whether codex_quota metadata indicates the
 // account's primary usage window is exhausted until reset_at.
 func codexQuotaMetadataBlocking(auth *Auth, now time.Time) (bool, time.Time) {

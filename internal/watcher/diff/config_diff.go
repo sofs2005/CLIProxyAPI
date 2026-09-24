@@ -155,6 +155,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Codex.OrphanDelegationCompatibility != newCfg.Codex.OrphanDelegationCompatibility {
 		changes = append(changes, fmt.Sprintf("codex.orphan-delegation-compatibility: %t -> %t", oldCfg.Codex.OrphanDelegationCompatibility, newCfg.Codex.OrphanDelegationCompatibility))
 	}
+	if strings.TrimSpace(oldCfg.Codex.FreeRefreshModel) != strings.TrimSpace(newCfg.Codex.FreeRefreshModel) {
+		changes = append(changes, fmt.Sprintf("codex.free-refresh-model: %s -> %s", displayOptionalValue(oldCfg.Codex.FreeRefreshModel), displayOptionalValue(newCfg.Codex.FreeRefreshModel)))
+	}
 	if oldCfg.XAI.InjectXSearch != newCfg.XAI.InjectXSearch {
 		changes = append(changes, fmt.Sprintf("xai.inject-x-search: %t -> %t", oldCfg.XAI.InjectXSearch, newCfg.XAI.InjectXSearch))
 	}

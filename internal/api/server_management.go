@@ -364,6 +364,7 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	patched := injectModelPriceDropdownClipPatch(data)
 	patched = injectCodexFreeRefreshPatch(patched, codexRefreshToken)
 	patched = injectXAIRefreshPatch(patched, xaiRefreshToken)
+	patched = injectCodexResetSortPatch(patched)
 
 	etag := fmt.Sprintf(`"%x"`, sha256.Sum256(patched))
 	c.Header("ETag", etag)
@@ -2288,6 +2289,156 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
 </script>`)
 
 	patch = bytes.ReplaceAll(patch, []byte("__CPA_XAI_REFRESH_TOKEN__"), []byte(xaiRefreshToken))
+
+	lower := bytes.ToLower(html)
+	bodyClose := []byte("</body>")
+	if idx := bytes.LastIndex(lower, bodyClose); idx >= 0 {
+		out := make([]byte, 0, len(html)+len(patch))
+		out = append(out, html[:idx]...)
+		out = append(out, patch...)
+		out = append(out, html[idx:]...)
+		return out
+	}
+	return append(html, patch...)
+}
+
+// injectCodexResetSortPatch orders Codex auth-file entries by their next quota
+// reset while the management panel keeps its default sort. The panel sorts in
+// memory and renders only the current page, so neither the API list order nor a
+// DOM reorder can reach the screen; refining the panel's own sort is the only
+// server-side lever. It is a standalone script with its own marker, and it only
+// refines the panel's default provider-then-name comparator, so explicit AZ and
+// priority sort modes keep their own behavior.
+func injectCodexResetSortPatch(html []byte) []byte {
+	const marker = "__cpa_codex_reset_sort_patch__"
+	if len(html) == 0 || bytes.Contains(html, []byte(marker)) {
+		return html
+	}
+
+	patch := []byte(`<script>
+(function () {
+  var MARKER = "__cpa_codex_reset_sort_patch__";
+  if (window[MARKER]) return;
+  window[MARKER] = true;
+
+  var nativeSort = Array.prototype.sort;
+  if (typeof nativeSort !== "function") return;
+
+  var comparatorSignatures = typeof WeakMap === "function" ? new WeakMap() : null;
+
+  function normalizeText(value) {
+    return String(value == null ? "" : value).toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  function providerKey(entry) {
+    if (!entry) return "";
+    var raw = entry.provider;
+    if (raw == null) raw = entry.type;
+    return normalizeText(raw).replace(/_/g, "-");
+  }
+
+  function isCodexEntry(entry) {
+    return providerKey(entry) === "codex";
+  }
+
+  function looksLikeAuthFileList(array) {
+    if (!array || array.length < 2) return false;
+    var withProvider = 0;
+    for (var i = 0; i < array.length; i++) {
+      var entry = array[i];
+      if (!entry || typeof entry !== "object") return false;
+      if (typeof entry.name !== "string") return false;
+      if (typeof entry.provider === "string" || typeof entry.type === "string") withProvider++;
+    }
+    return withProvider >= 2;
+  }
+
+  // The panel compares provider keys and names with localeCompare, and only the
+  // default provider-then-name comparator answers this way: a name-only or
+  // priority comparator returns 0 for both probes. A future panel that changes
+  // its default comparator simply makes this patch a no-op.
+  function isDefaultComparator(comparator) {
+    if (typeof comparator !== "function") return false;
+    if (!comparatorSignatures) return false;
+    var cached = comparatorSignatures.get(comparator);
+    if (cached !== undefined) return cached;
+    var signature = false;
+    try {
+      var codexProbe = { provider: "codex", type: "codex", name: "aaa", priority: 0 };
+      var otherProbe = { provider: "aaa", type: "aaa", name: "zzz", priority: 0 };
+      signature = comparator(codexProbe, otherProbe) > 0 && comparator(otherProbe, codexProbe) < 0;
+    } catch (err) {
+      signature = false;
+    }
+    comparatorSignatures.set(comparator, signature);
+    return signature;
+  }
+
+  // Only a future reset is a usable ordering key; unknown, malformed, and
+  // already-elapsed values all fall back to the panel's name order.
+  function resetAtMs(entry) {
+    var raw = entry && entry.codex_reset_at;
+    if (raw == null) return null;
+    var value;
+    if (typeof raw === "number") {
+      value = raw < 1e12 ? raw * 1000 : raw;
+    } else {
+      var text = String(raw).trim();
+      if (!text) return null;
+      value = /^[0-9]+$/.test(text) ? Number(text) * 1000 : Date.parse(text);
+    }
+    if (!isFinite(value) || value <= Date.now()) return null;
+    return value;
+  }
+
+  // Mirrors the panel's own name tiebreak so entries without a usable reset keep
+  // the relative order the panel gave them.
+  function compareNames(left, right) {
+    var leftName = String((left && left.name) == null ? "" : left.name);
+    var rightName = String((right && right.name) == null ? "" : right.name);
+    try {
+      return leftName.localeCompare(rightName);
+    } catch (err) {
+      if (leftName === rightName) return 0;
+      return leftName < rightName ? -1 : 1;
+    }
+  }
+
+  function compareByReset(left, right) {
+    var leftReset = resetAtMs(left);
+    var rightReset = resetAtMs(right);
+    var leftKnown = leftReset !== null;
+    var rightKnown = rightReset !== null;
+    if (leftKnown !== rightKnown) return leftKnown ? -1 : 1;
+    if (leftKnown && rightKnown && leftReset !== rightReset) return leftReset - rightReset;
+    return compareNames(left, right);
+  }
+
+  // Permute only the Codex slots, so non-Codex providers keep the order the panel
+  // gave them and Codex entries without a known reset stay behind the ones with one.
+  function refineCodexOrder(array) {
+    var slots = [];
+    for (var i = 0; i < array.length; i++) {
+      if (isCodexEntry(array[i])) slots.push(i);
+    }
+    if (slots.length < 2) return;
+    var run = [];
+    for (var j = 0; j < slots.length; j++) run.push(array[slots[j]]);
+    nativeSort.call(run, compareByReset);
+    for (var k = 0; k < slots.length; k++) array[slots[k]] = run[k];
+  }
+
+  Array.prototype.sort = function (comparator) {
+    var sorted = nativeSort.apply(this, arguments);
+    try {
+      if (isDefaultComparator(comparator) && looksLikeAuthFileList(this)) refineCodexOrder(this);
+    } catch (err) {
+      // The refinement must never break the panel's own rendering.
+    }
+    return sorted;
+  };
+})();
+</script>`)
 
 	lower := bytes.ToLower(html)
 	bodyClose := []byte("</body>")
