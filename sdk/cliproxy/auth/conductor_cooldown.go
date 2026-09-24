@@ -875,9 +875,32 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							}
 						case 429:
 							var next time.Time
+							var credentialNext time.Time
 							backoffLevel := state.Quota.BackoffLevel
+							if result.CredentialScope {
+								backoffLevel = 0
+								if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" {
+									backoffLevel = auth.Quota.BackoffLevel
+								}
+							}
 							if !disableCooling {
-								next, backoffLevel = resolveQuotaCooldown(auth, result.RetryAfter, state.Quota, now)
+								// Credential-scoped failures track their own deadline so a
+								// model-specific quota window cannot leak into the auth-level
+								// credential cooldown (and vice versa).
+								quotaForFailure := state.Quota
+								if result.CredentialScope {
+									if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" {
+										quotaForFailure = auth.Quota
+									} else {
+										quotaForFailure.NextRecoverAt = time.Time{}
+										quotaForFailure.BackoffLevel = 0
+									}
+								}
+								next, backoffLevel = resolveQuotaCooldown(auth, result.RetryAfter, quotaForFailure, now)
+								credentialNext = next
+								if state.Quota.Exceeded && state.Quota.NextRecoverAt.After(next) {
+									next = state.Quota.NextRecoverAt
+								}
 							}
 							state.NextRetryAfter = next
 							applyCooldownFields(&state.Quota, QuotaState{
@@ -891,7 +914,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 									if otherState != nil && otherState != state {
 										otherState.Unavailable = true
 										otherState.Status = StatusError
-										otherQuotaNext := next
+										otherQuotaNext := credentialNext
 										if otherState.Quota.Exceeded && otherState.Quota.NextRecoverAt.After(otherQuotaNext) {
 											otherQuotaNext = otherState.Quota.NextRecoverAt
 										}
@@ -911,13 +934,15 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 									}
 								}
 								auth.Unavailable = true
-								auth.Quota.Exceeded = true
-								auth.Quota.Reason = "credential_quota"
-								authNext := next
-								if auth.Quota.NextRecoverAt.After(authNext) {
+								authNext := credentialNext
+								if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" &&
+									auth.Quota.NextRecoverAt.After(authNext) {
 									authNext = auth.Quota.NextRecoverAt
 								}
+								auth.Quota.Exceeded = true
+								auth.Quota.Reason = "credential_quota"
 								auth.Quota.NextRecoverAt = authNext
+								auth.Quota.BackoffLevel = backoffLevel
 								auth.NextRetryAfter = authNext
 							}
 						case 408, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526:
