@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func (m *Manager) SetPluginScheduler(scheduler PluginScheduler) {
@@ -1123,6 +1123,17 @@ func (m *Manager) pickViaPluginScheduler(ctx context.Context, scheduler PluginSc
 	}
 	if !handled || !resp.Handled {
 		return nil, false, nil
+	}
+	if resp.Reject {
+		rejectCode := strings.TrimSpace(resp.RejectCode)
+		if rejectCode == "" {
+			rejectCode = "auth_unavailable"
+		}
+		rejectMessage := strings.TrimSpace(resp.RejectReason)
+		if rejectMessage == "" {
+			rejectMessage = "scheduler rejected candidate selection"
+		}
+		return nil, true, &Error{Code: rejectCode, Message: rejectMessage}
 	}
 	if selected := pickSchedulerAuthByID(candidates, resp.AuthID); selected != nil {
 		return selected, true, nil
