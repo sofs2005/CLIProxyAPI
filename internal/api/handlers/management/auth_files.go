@@ -503,6 +503,13 @@ func isPersistentAuthFailure(auth *coreauth.Auth, now time.Time) bool {
 	if coreauth.HasUnauthorizedAuthFailure(auth) {
 		return true
 	}
+	// 401/403 credential failures are terminal in this fork: the management panel must
+	// keep showing the credential as errored instead of reconciling an elapsed cooldown
+	// back to active. The runtime refresh path has a narrower notion of "terminal
+	// unauthorized" so a 403 can still be cleared by a successful token refresh.
+	if coreauth.HasTerminalCredentialFailure(auth) {
+		return true
+	}
 	// An OAuth credential whose access token is expired cannot be used to serve requests.
 	if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && !exp.After(now) {
 		return true

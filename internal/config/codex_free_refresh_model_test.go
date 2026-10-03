@@ -35,3 +35,31 @@ func TestLoadConfigOptional_CodexFreeRefreshModelDefault(t *testing.T) {
 		t.Fatalf("default FreeRefreshModelOrDefault() = %q, want %q", got, DefaultCodexFreeRefreshModel)
 	}
 }
+
+// The canonical v8 location is upstream.codex; oauth.providers.codex is the
+// historical path and must migrate to it.
+func TestParseConfigBytes_CodexFreeRefreshModelLocations(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "canonical upstream path",
+			raw:  "config-version: 8\nupstream:\n  codex:\n    free-refresh-model: \"  gpt-9-test  \"\n",
+		},
+		{
+			name: "historical oauth path",
+			raw:  "config-version: 8\noauth:\n  providers:\n    codex:\n      free-refresh-model: \"  gpt-9-test  \"\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, errParse := ParseConfigBytes([]byte(tc.raw))
+			if errParse != nil {
+				t.Fatalf("ParseConfigBytes() error = %v", errParse)
+			}
+			if got := cfg.Codex.FreeRefreshModelOrDefault(); got != "gpt-9-test" {
+				t.Fatalf("FreeRefreshModelOrDefault() = %q, want %q", got, "gpt-9-test")
+			}
+		})
+	}
+}
