@@ -158,6 +158,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if strings.TrimSpace(oldCfg.Codex.FreeRefreshModel) != strings.TrimSpace(newCfg.Codex.FreeRefreshModel) {
 		changes = append(changes, fmt.Sprintf("codex.free-refresh-model: %s -> %s", displayOptionalValue(oldCfg.Codex.FreeRefreshModel), displayOptionalValue(newCfg.Codex.FreeRefreshModel)))
 	}
+	if oldCfg.Claude.ToolSearch != newCfg.Claude.ToolSearch {
+		changes = append(changes, fmt.Sprintf("claude.tool-search: %t -> %t", oldCfg.Claude.ToolSearch, newCfg.Claude.ToolSearch))
+	}
 	if oldCfg.XAI.InjectXSearch != newCfg.XAI.InjectXSearch {
 		changes = append(changes, fmt.Sprintf("xai.inject-x-search: %t -> %t", oldCfg.XAI.InjectXSearch, newCfg.XAI.InjectXSearch))
 	}
@@ -304,6 +307,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			}
 			if o.RebuildMidSystemMessage != n.RebuildMidSystemMessage {
 				changes = append(changes, fmt.Sprintf("claude[%d].rebuild-mid-system-message: %t -> %t", i, o.RebuildMidSystemMessage, n.RebuildMidSystemMessage))
+			}
+			if o.NativeToolSearch != n.NativeToolSearch {
+				changes = append(changes, fmt.Sprintf("claude[%d].native-tool-search: %t -> %t", i, o.NativeToolSearch, n.NativeToolSearch))
 			}
 			if strings.TrimSpace(o.FingerprintProfile) != strings.TrimSpace(n.FingerprintProfile) {
 				changes = append(changes, fmt.Sprintf("claude[%d].fingerprint-profile: %s -> %s", i, strings.TrimSpace(o.FingerprintProfile), strings.TrimSpace(n.FingerprintProfile)))
