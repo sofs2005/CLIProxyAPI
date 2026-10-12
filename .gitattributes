@@ -1,0 +1,12 @@
+# Normalize line endings for every text file in the repository.
+#
+# The index and the repository always store LF. This declaration takes
+# precedence over a local `core.autocrlf=true`, so a checkout keeps LF on
+# every platform and `gofmt -l .` reports only real formatting problems.
+#
+# `text=auto` still lets Git detect binary files (e.g. assets/*.png) and
+# leave their bytes untouched.
+* text=auto eol=lf
+
+# Windows batch/PowerShell scripts are only consumed by cmd.exe/PowerShell,
+# which accept LF, so they are covered by the rule above as well.
