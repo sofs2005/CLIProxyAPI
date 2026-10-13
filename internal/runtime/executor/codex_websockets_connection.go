@@ -181,6 +181,14 @@ func readCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession,
 	}
 }
 
+// executionProxyURL resolves the proxy for an execution, following the same
+// priority as helps.ResolveEffectiveProxy so that per-provider proxies
+// (cfg.ProxyByProvider) keep working for websocket executors:
+// request override > credential proxy-url > provider proxy > global proxy-url.
+func executionProxyURL(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth) string {
+	return helps.ResolveEffectiveProxy(ctx, cfg, auth)
+}
+
 func newProxyAwareWebsocketDialer(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth) *websocket.Dialer {
 	dialer := &websocket.Dialer{
 		Proxy:             http.ProxyFromEnvironment,

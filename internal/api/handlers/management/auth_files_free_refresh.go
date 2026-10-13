@@ -85,12 +85,13 @@ func (h *Handler) ListCodexRefreshAuthFiles(c *gin.Context) {
 		return
 	}
 	auths := h.authManager.List()
+	quota := h.authFileQuotaContextFor(c)
 	files := make([]gin.H, 0, len(auths))
 	for _, auth := range auths {
 		if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
 			continue
 		}
-		if entry := h.buildAuthFileEntry(auth); entry != nil {
+		if entry := h.buildAuthFileEntry(auth, quota); entry != nil {
 			files = append(files, entry)
 		}
 	}
@@ -649,12 +650,13 @@ func (h *Handler) ListXAIRefreshAuthFiles(c *gin.Context) {
 		return
 	}
 	auths := h.authManager.List()
+	quota := h.authFileQuotaContextFor(c)
 	files := make([]gin.H, 0, len(auths))
 	for _, auth := range auths {
 		if !isXAIAuth(auth) {
 			continue
 		}
-		if entry := h.buildAuthFileEntry(auth); entry != nil {
+		if entry := h.buildAuthFileEntry(auth, quota); entry != nil {
 			files = append(files, entry)
 		}
 	}

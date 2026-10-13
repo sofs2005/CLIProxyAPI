@@ -227,6 +227,10 @@ type CodexConfig struct {
 	// to start a new usage cycle. Empty falls back to DefaultCodexFreeRefreshModel,
 	// so a model upgrade only requires a config change.
 	FreeRefreshModel string `yaml:"free-refresh-model,omitempty" json:"free-refresh-model,omitempty"`
+	// SignInWithChatGPTIdentifier configures the identifier (agent_name_hint and User-Agent prefix)
+	// for Codex Sign in with ChatGPT (SIWC) OAuth authorization and API requests.
+	// Defaults to "CLIProxyAPI".
+	SignInWithChatGPTIdentifier string `yaml:"signin-with-chatgpt-identifier,omitempty" json:"signin-with-chatgpt-identifier,omitempty"`
 }
 
 // DefaultCodexFreeRefreshModel is the model used by the management panel's
@@ -243,6 +247,19 @@ func (c *CodexConfig) FreeRefreshModelOrDefault() string {
 		return model
 	}
 	return DefaultCodexFreeRefreshModel
+}
+
+// DefaultSignInWithChatGPTIdentifier is the default identifier (agent_name_hint and User-Agent prefix)
+// used for Codex Sign in with ChatGPT (SIWC) OAuth authorization and API requests.
+const DefaultSignInWithChatGPTIdentifier = "CLIProxyAPI"
+
+// EffectiveSignInWithChatGPTIdentifier returns the configured Sign in with ChatGPT
+// identifier, or DefaultSignInWithChatGPTIdentifier when unset or blank.
+func (c CodexConfig) EffectiveSignInWithChatGPTIdentifier() string {
+	if v := strings.TrimSpace(c.SignInWithChatGPTIdentifier); v != "" {
+		return v
+	}
+	return DefaultSignInWithChatGPTIdentifier
 }
 
 // DefaultCodexStreamBootstrapTimeout is the default maximum duration to buffer bootstrap events.
@@ -412,6 +429,16 @@ type RoutingConfig struct {
 	// When false, subagents are distributed across the credential pool via the fallback selector.
 	// Default: true. Ignored when SessionAffinity is false.
 	SessionAffinitySubagents *bool `yaml:"session-affinity-subagents,omitempty" json:"session-affinity-subagents,omitempty"`
+
+	// SessionAffinityRebindOn controls which credential failures rebind an established session
+	// to the failover credential.
+	// Supported values:
+	//   - "any" (default): any credential-attributed failure unbinds and rebinds on failover.
+	//   - "quota": transient errors (408, 5xx, empty stream, buffer limit) fail over for that
+	//     request only while keeping the session bound to its original credential; quota and
+	//     auth errors (429, 401/402/403, 404/model support, invalid_grant) rebind as normal.
+	// Ignored when SessionAffinity is false.
+	SessionAffinityRebindOn string `yaml:"session-affinity-rebind-on,omitempty" json:"session-affinity-rebind-on,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
