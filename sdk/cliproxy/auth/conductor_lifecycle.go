@@ -249,7 +249,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		existing, ok := m.auths[auth.ID]
 		m.mu.RUnlock()
 		if !ok || existing == nil {
-			return nil, false, false, nil
+			return nil, false, false, nil, nil
 		}
 		// Validate file snapshot freshness under the per-auth mutation gate
 		// without holding m.mu across filesystem I/O.
@@ -257,7 +257,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			m.mu.RLock()
 			current := m.auths[auth.ID].Clone()
 			m.mu.RUnlock()
-			return current, false, false, nil
+			return current, false, false, nil, nil
 		}
 	}
 	m.mu.Lock()
