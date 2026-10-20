@@ -1,10 +1,13 @@
 name: release
 
 on:
+  # Same triggers as docker-image.yml: main pushes, v* tags and manual runs.
   push:
-    # run only against tags
+    branches:
+      - main
     tags:
       - '*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,9 +15,144 @@ permissions:
 env:
   GH_REPO: ${{ github.repository }}
   GO_VERSION: '1.26.4'
+  FIXED_ASSET_NAME: cliproxyapi-linux-amd64
 
 jobs:
+  # The fixed-name Linux amd64 build also runs on main pushes, where it acts as
+  # the compile + smoke check and never touches a release.
+  build-linux-amd64-fixed:
+    name: build linux-amd64 fixed asset
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Refresh models catalog
+        shell: bash
+        run: bash .github/scripts/refresh-model-catalogs.sh
+      - name: Generate build metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "FIXED_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          else
+            echo "FIXED_VERSION=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          fi
+          echo "COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "COMMIT_SHORT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      - name: Build binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -buildvcs=false \
+            -trimpath \
+            -ldflags="-s -w -X main.Version=${FIXED_VERSION} -X main.Commit=${COMMIT_SHORT} -X main.BuildDate=${BUILD_DATE}" \
+            -o "dist/${FIXED_ASSET_NAME}" ./cmd/server
+      - name: Generate build info and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          go_version="$(go version | awk '{print $3}')"
+          sha256="$(sha256sum "${FIXED_ASSET_NAME}" | awk '{print $1}')"
+          jq -n \
+            --arg version "$FIXED_VERSION" \
+            --arg commit "$COMMIT" \
+            --arg commit_short "$COMMIT_SHORT" \
+            --arg build_time "$BUILD_DATE" \
+            --arg go_version "$go_version" \
+            --arg platform "linux/amd64" \
+            --arg artifact "$FIXED_ASSET_NAME" \
+            --arg sha256 "$sha256" \
+            '{
+              version: $version,
+              commit: $commit,
+              commit_short: $commit_short,
+              build_time: $build_time,
+              go_version: $go_version,
+              platform: $platform,
+              goos: "linux",
+              goarch: "amd64",
+              cgo_enabled: "0",
+              artifact: $artifact,
+              sha256: $sha256
+            }' > build-info.json
+          sha256sum "${FIXED_ASSET_NAME}" > checksums.txt
+          cat build-info.json
+          cat checksums.txt
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="dist/${FIXED_ASSET_NAME}"
+          test -f "$binary"
+          test -s "$binary"
+          test -x "$binary"
+
+          file "$binary"
+          file "$binary" | grep -q 'ELF 64-bit LSB'
+          file "$binary" | grep -Eq 'x86-64|x86_64'
+
+          if readelf -l "$binary" | grep -q 'Requesting program interpreter'; then
+            echo "binary must be statically linked (CGO_ENABLED=0)" >&2
+            exit 1
+          fi
+
+          help_output="$("$binary" --help 2>&1)"
+          printf '%s\n' "$help_output"
+          grep -Fq "CLIProxyAPI Version: ${FIXED_VERSION}," <<<"$help_output"
+          grep -Fq -- '-config' <<<"$help_output"
+
+          (cd dist && sha256sum -c checksums.txt)
+
+          jq -e '.version and .commit and .build_time and .go_version and .platform' dist/build-info.json > /dev/null
+          test "$(jq -r '.platform' dist/build-info.json)" = "linux/amd64"
+          test "$(jq -r '.artifact' dist/build-info.json)" = "${FIXED_ASSET_NAME}"
+          echo "Smoke test passed."
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64-fixed
+          path: |
+            dist/cliproxyapi-linux-amd64
+            dist/checksums.txt
+            dist/build-info.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # prepare-release creates the release in a parallel job; wait for it
+          # instead of failing on a not-yet-existing release.
+          for attempt in $(seq 1 60); do
+            if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" -eq 60 ]]; then
+              echo "release ${GITHUB_REF_NAME} was not created in time" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          gh release upload "$GITHUB_REF_NAME" \
+            "dist/${FIXED_ASSET_NAME}" \
+            "dist/build-info.json" \
+            --clobber
+
   prepare-release:
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -35,6 +173,12 @@ jobs:
 
           cat > "$release_notes_file" <<'EOF'
           <!-- cliproxyapi-linux-release-assets:start -->
+          ## Fixed-name assets
+
+          - `cliproxyapi-linux-amd64` is a statically linked Linux amd64 binary with a fixed name, so a server can always download it from `releases/latest/download/cliproxyapi-linux-amd64`.
+          - `checksums.txt` holds the SHA-256 checksums for all release assets.
+          - `build-info.json` records the version, commit, build time, Go version and target platform of the fixed-name binary.
+
           ## Linux release assets
 
           - `CLIProxyAPI_<version>_linux_<arch>.tar.gz` is the default Linux build. It supports dynamic library plugins and is built against a GLIBC 2.17 baseline.
@@ -94,6 +238,7 @@ jobs:
   build-hosted:
     name: build ${{ matrix.target }}
     needs: prepare-release
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -202,39 +347,10 @@ jobs:
             exit 1
           fi
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-      - name: Refresh release checksums
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          gh release download "$GITHUB_REF_NAME" \
-            --pattern 'CLIProxyAPI_*.tar.gz' \
-            --pattern 'CLIProxyAPI_*.zip' \
-            --dir "$tmp_dir" \
-            --clobber
-          (
-            cd "$tmp_dir"
-            shopt -s nullglob
-            archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
-            if [[ ${#archives[@]} -eq 0 ]]; then
-              echo "No release archives found"
-              exit 0
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-            else
-              shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
-            fi
-          )
-          gh release upload "$GITHUB_REF_NAME" "$tmp_dir/checksums.txt" --clobber
-
   build-linux-glibc:
     name: build linux-${{ matrix.goarch }} glibc
     needs: prepare-release
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -338,39 +454,10 @@ jobs:
             exit 1
           fi
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-      - name: Refresh release checksums
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          gh release download "$GITHUB_REF_NAME" \
-            --pattern 'CLIProxyAPI_*.tar.gz' \
-            --pattern 'CLIProxyAPI_*.zip' \
-            --dir "$tmp_dir" \
-            --clobber
-          (
-            cd "$tmp_dir"
-            shopt -s nullglob
-            archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
-            if [[ ${#archives[@]} -eq 0 ]]; then
-              echo "No release archives found"
-              exit 0
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-            else
-              shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
-            fi
-          )
-          gh release upload "$GITHUB_REF_NAME" "$tmp_dir/checksums.txt" --clobber
-
   build-linux-no-plugin:
     name: build linux-${{ matrix.goarch }} no-plugin
     needs: prepare-release
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -457,39 +544,10 @@ jobs:
             exit 1
           fi
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-      - name: Refresh release checksums
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          gh release download "$GITHUB_REF_NAME" \
-            --pattern 'CLIProxyAPI_*.tar.gz' \
-            --pattern 'CLIProxyAPI_*.zip' \
-            --dir "$tmp_dir" \
-            --clobber
-          (
-            cd "$tmp_dir"
-            shopt -s nullglob
-            archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
-            if [[ ${#archives[@]} -eq 0 ]]; then
-              echo "No release archives found"
-              exit 0
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-            else
-              shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
-            fi
-          )
-          gh release upload "$GITHUB_REF_NAME" "$tmp_dir/checksums.txt" --clobber
-
   build-freebsd:
     name: build ${{ matrix.target }}
     needs: prepare-release
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     env:
       TARGET: ${{ matrix.target }}
@@ -658,40 +716,12 @@ jobs:
             exit 1
           fi
           gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-      - name: Refresh release checksums
-        continue-on-error: true
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' EXIT
-          gh release download "$GITHUB_REF_NAME" \
-            --pattern 'CLIProxyAPI_*.tar.gz' \
-            --pattern 'CLIProxyAPI_*.zip' \
-            --dir "$tmp_dir" \
-            --clobber
-          (
-            cd "$tmp_dir"
-            shopt -s nullglob
-            archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
-            if [[ ${#archives[@]} -eq 0 ]]; then
-              echo "No release archives found"
-              exit 0
-            fi
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-            else
-              shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
-            fi
-          )
-          gh release upload "$GITHUB_REF_NAME" "$tmp_dir/checksums.txt" --clobber
 
   publish-checksums:
     runs-on: ubuntu-latest
-    if: always()
+    if: startsWith(github.ref, 'refs/tags/')
     needs:
+      - build-linux-amd64-fixed
       - build-hosted
       - build-linux-glibc
       - build-linux-no-plugin
@@ -708,10 +738,22 @@ jobs:
           set -euo pipefail
           cd dist
           shopt -s nullglob
-          archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
-          if [[ ${#archives[@]} -eq 0 ]]; then
-            echo "No release archives found"
-            exit 0
+
+          # Every release asset this workflow publishes: the fixed-name binary,
+          # its build metadata and the per-platform archives.
+          assets=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
+          assets+=("${FIXED_ASSET_NAME}" build-info.json)
+
+          missing=()
+          for asset in "${assets[@]}"; do
+            [[ -f "$asset" ]] || missing+=("$asset")
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            printf 'missing release assets: %s\n' "${missing[*]}" >&2
+            ls -l >&2
+            exit 1
           fi
-          sha256sum "${archives[@]}" | sort -k2 > checksums.txt
+
+          sha256sum "${assets[@]}" | sort -k2 > checksums.txt
+          cat checksums.txt
           gh release upload "$GITHUB_REF_NAME" checksums.txt --clobber

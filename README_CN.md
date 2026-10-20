@@ -142,6 +142,58 @@ PackyCode 为本软件用户提供了特别优惠：使用<a href="https://www.p
 
 CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-for.me/cn/)
 
+## 预编译 Linux 二进制
+
+[`release`](.github/workflows/release.yaml) 工作流会构建静态链接的 Linux amd64 二进制（`CGO_ENABLED=0`、`-trimpath`、`-ldflags="-s -w"`），并使用固定资产名称发布，方便服务器始终从固定地址下载。
+
+发布资产：
+
+| 资产 | 说明 |
+| --- | --- |
+| `cliproxyapi-linux-amd64` | Linux amd64 二进制（静态链接，无 libc 依赖） |
+| `checksums.txt` | 发布资产的 SHA-256 校验值 |
+| `build-info.json` | 版本、提交、构建时间、Go 版本与目标平台 |
+
+### 下载与校验
+
+```bash
+curl -fL -o cliproxyapi-linux-amd64 \
+  https://github.com/sofs2005/CLIProxyAPI/releases/latest/download/cliproxyapi-linux-amd64
+curl -fL -O \
+  https://github.com/sofs2005/CLIProxyAPI/releases/latest/download/checksums.txt
+curl -fL -O \
+  https://github.com/sofs2005/CLIProxyAPI/releases/latest/download/build-info.json
+
+# 校验二进制
+grep '  cliproxyapi-linux-amd64$' checksums.txt > cliproxyapi-linux-amd64.sha256
+sha256sum -c cliproxyapi-linux-amd64.sha256
+rm -f cliproxyapi-linux-amd64.sha256
+
+# 查看构建信息并确认可以运行
+cat build-info.json
+chmod +x cliproxyapi-linux-amd64
+./cliproxyapi-linux-amd64 --help
+```
+
+如需校验指定版本，把 `latest/download` 替换为 `download/<tag>`。
+
+### 创建版本标签
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+推送 `v*` 标签后会构建二进制，并把资产发布到该标签对应的 GitHub Release。Docker 镜像在 [`docker-image.yml`](.github/workflows/docker-image.yml) 中使用相同的触发条件构建。
+
+工作流行为（与 `docker-image.yml` 触发条件一致）：
+
+- `push` 到 `main`：**每次推送都会运行**，只执行固定名 Linux amd64 构建（含 smoke test），不发布 Release。
+- 推送 `v*` 标签：所有 job 都会运行，发布固定名二进制与各平台压缩包，最后由 `checksums.txt` 统一覆盖全部资产。
+- `workflow_dispatch`：手动构建；产物上传到本次运行，只有在标签上运行才会发布 Release。
+
+当二进制缺失、不是 amd64 静态 ELF、`--help` 未输出版本、与 `checksums.txt` 不匹配，或 `build-info.json` 字段不完整时，smoke test 会让工作流失败。
+
 ## 管理 API 文档
 
 请参见 [MANAGEMENT_API_CN.md](https://help.router-for.me/cn/management/api)

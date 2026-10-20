@@ -147,6 +147,58 @@ PackyCode provides special discounts for our software users: register using <a h
 
 CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
 
+## Prebuilt Linux Binary
+
+The [`release`](.github/workflows/release.yaml) workflow builds a statically linked Linux amd64 binary (`CGO_ENABLED=0`, `-trimpath`, `-ldflags="-s -w"`) and publishes it with fixed asset names, so a server can always fetch the latest build from a stable URL.
+
+Release assets:
+
+| Asset | Description |
+| --- | --- |
+| `cliproxyapi-linux-amd64` | Linux amd64 binary (static, no libc dependency) |
+| `checksums.txt` | SHA-256 checksums for the release assets |
+| `build-info.json` | Version, commit, build time, Go version and target platform |
+
+### Download and verify
+
+```bash
+curl -fL -o cliproxyapi-linux-amd64 \
+  https://github.com/sofs2005/CLIProxyAPI/releases/latest/download/cliproxyapi-linux-amd64
+curl -fL -O \
+  https://github.com/sofs2005/CLIProxyAPI/releases/latest/download/checksums.txt
+curl -fL -O \
+  https://github.com/sofs2005/CLIProxyAPI/releases/latest/download/build-info.json
+
+# Verify the binary
+grep '  cliproxyapi-linux-amd64$' checksums.txt > cliproxyapi-linux-amd64.sha256
+sha256sum -c cliproxyapi-linux-amd64.sha256
+rm -f cliproxyapi-linux-amd64.sha256
+
+# Inspect the build metadata and confirm it runs
+cat build-info.json
+chmod +x cliproxyapi-linux-amd64
+./cliproxyapi-linux-amd64 --help
+```
+
+To verify a specific release instead of `latest`, replace `latest/download` with `download/<tag>`.
+
+### Create a release tag
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+Pushing a `v*` tag builds the binary and publishes the assets to the GitHub Release for that tag. Docker images are built for the same triggers in [`docker-image.yml`](.github/workflows/docker-image.yml).
+
+Behaviour of the workflow (same triggers as `docker-image.yml`):
+
+- `push` to `main` — runs on **every** push: only the fixed-name Linux amd64 job runs (build and smoke test), no release is published.
+- `push` of a `v*` tag — every job runs: the fixed-name binary is published plus the per-platform archives, then `checksums.txt` covers all of them.
+- `workflow_dispatch` — manual build; artifacts are uploaded to the workflow run, and a release is published only when the run is started from a tag.
+
+The smoke test fails the workflow when the binary is missing, is not an amd64 static ELF, does not print its version in `--help`, does not match `checksums.txt`, or `build-info.json` is incomplete.
+
 ## Management API
 
 see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
