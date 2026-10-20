@@ -40,6 +40,7 @@ func (m *Manager) BindCodexSIWC(ctx context.Context, id string, expectedEpoch ui
 		return nil, err
 	}
 	var committed *Auth
+	var previous *Auth
 	cooldownChanged := false
 	err = codex.WithFileLock(path, func() error {
 		if errCtx := ctx.Err(); errCtx != nil {
@@ -105,6 +106,7 @@ func (m *Manager) BindCodexSIWC(ctx context.Context, id string, expectedEpoch ui
 			m.mu.Unlock()
 			return fmt.Errorf("bind SIWC: registration changed before publication")
 		}
+		previous = current.Clone()
 		updated := current.Clone()
 		updated.Metadata = disk
 		updated.Storage = nil
@@ -157,7 +159,7 @@ func (m *Manager) BindCodexSIWC(ctx context.Context, id string, expectedEpoch ui
 		return nil, err
 	}
 	release()
-	m.finishAuthUpdate(ctx, committed, cooldownChanged)
+	m.finishAuthUpdate(ctx, previous, committed, cooldownChanged)
 	return committed, nil
 }
 
