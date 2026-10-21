@@ -193,9 +193,11 @@ Pushing a `v*` tag builds the binary and publishes the assets to the GitHub Rele
 
 Behaviour of the workflow (same triggers as `docker-image.yml`):
 
-- `push` to `main` — runs on **every** push: only the fixed-name Linux amd64 job runs (build and smoke test), no release is published.
-- `push` of a `v*` tag — every job runs: the fixed-name binary is published plus the per-platform archives, then `checksums.txt` covers all of them.
-- `workflow_dispatch` — manual build; artifacts are uploaded to the workflow run, and a release is published only when the run is started from a tag.
+- `push` to `main` — runs on **every** push: the fixed-name Linux amd64 job builds, smoke tests and uploads `cliproxyapi-linux-amd64`, `build-info.json` and `checksums.txt` to the rolling [`latest`](https://github.com/sofs2005/CLIProxyAPI/releases/tag/latest) release.
+- `push` of a `v*` tag — every job runs: the fixed-name binary is published to the tag release plus the per-platform archives, then `checksums.txt` covers all of them.
+- `workflow_dispatch` — manual build; behaves like a `main` push and updates the rolling `latest` release.
+
+`releases/latest/download/` always resolves to the rolling `latest` release, so the download URL above serves the newest `main` build even after a version tag is published. Version tags stay reachable through `releases/download/<tag>/...`.
 
 The smoke test fails the workflow when the binary is missing, is not an amd64 static ELF, does not print its version in `--help`, does not match `checksums.txt`, or `build-info.json` is incomplete.
 

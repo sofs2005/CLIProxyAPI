@@ -1,12 +1,14 @@
 name: release
 
 on:
-  # Same triggers as docker-image.yml: main pushes, v* tags and manual runs.
+  # Same triggers as docker-image.yml: main pushes, version tags and manual runs.
   push:
     branches:
       - main
     tags:
-      - '*'
+      # Only version tags build release assets. The rolling "latest" tag that
+      # the main-branch path creates must not re-trigger this workflow.
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -18,8 +20,9 @@ env:
   FIXED_ASSET_NAME: cliproxyapi-linux-amd64
 
 jobs:
-  # The fixed-name Linux amd64 build also runs on main pushes, where it acts as
-  # the compile + smoke check and never touches a release.
+  # The fixed-name Linux amd64 build also runs on main pushes and publishes to
+  # the stable "latest" release, mirroring how docker-image.yml pushes an image
+  # on every main commit.
   build-linux-amd64-fixed:
     name: build linux-amd64 fixed asset
     runs-on: ubuntu-latest
@@ -128,28 +131,52 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload release assets
-        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # prepare-release creates the release in a parallel job; wait for it
-          # instead of failing on a not-yet-existing release.
-          for attempt in $(seq 1 60); do
-            if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-              break
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # prepare-release creates the tag release in a parallel job; wait
+            # for it instead of failing on a not-yet-existing release.
+            release_tag="${GITHUB_REF_NAME}"
+            for attempt in $(seq 1 60); do
+              if gh release view "$release_tag" > /dev/null 2>&1; then
+                break
+              fi
+              if [[ "$attempt" -eq 60 ]]; then
+                echo "release ${release_tag} was not created in time" >&2
+                exit 1
+              fi
+              sleep 10
+            done
+          else
+            # main pushes and manual runs keep a stable rolling release so the
+            # fixed-name download URL always serves the newest main build.
+            # This must not be a prerelease: GitHub's releases/latest redirect
+            # only points at non-prerelease releases.
+            release_tag="latest"
+            if ! gh release view "$release_tag" > /dev/null 2>&1; then
+              gh release create "$release_tag" \
+                --target "${GITHUB_SHA}" \
+                --title "Latest main build" \
+                --notes "Rolling build of the \`main\` branch. For versioned assets see the release tags." \
+                --latest
             fi
-            if [[ "$attempt" -eq 60 ]]; then
-              echo "release ${GITHUB_REF_NAME} was not created in time" >&2
-              exit 1
-            fi
-            sleep 10
-          done
-          gh release upload "$GITHUB_REF_NAME" \
+          fi
+
+          gh release upload "$release_tag" \
             "dist/${FIXED_ASSET_NAME}" \
             "dist/build-info.json" \
             --clobber
+
+          # On version tags publish-checksums owns checksums.txt for every
+          # asset. On main pushes this job is the only publisher, so it uploads
+          # the checksum for the fixed-name binary itself.
+          if [[ "${release_tag}" == "latest" ]]; then
+            gh release upload "$release_tag" "dist/checksums.txt" --clobber
+          fi
 
   prepare-release:
     if: startsWith(github.ref, 'refs/tags/')
@@ -193,7 +220,9 @@ jobs:
 
           git fetch --force --tags
           previous_tag=""
-          if previous_tag_value="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null)"; then
+          # Restrict to version tags so the rolling "latest" tag is never picked
+          # as the changelog baseline.
+          if previous_tag_value="$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_REF_NAME}^" 2>/dev/null)"; then
             previous_tag="$previous_tag_value"
             changelog_range="${previous_tag}..${GITHUB_REF_NAME}"
           else
@@ -230,9 +259,9 @@ jobs:
           } > "$updated_notes_file"
 
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$updated_notes_file"
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$updated_notes_file" --latest=false
           else
-            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$updated_notes_file"
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "$updated_notes_file" --latest=false
           fi
 
   build-hosted:

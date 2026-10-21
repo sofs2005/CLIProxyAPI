@@ -188,9 +188,11 @@ git push origin v1.0.1
 
 工作流行为（与 `docker-image.yml` 触发条件一致）：
 
-- `push` 到 `main`：**每次推送都会运行**，只执行固定名 Linux amd64 构建（含 smoke test），不发布 Release。
-- 推送 `v*` 标签：所有 job 都会运行，发布固定名二进制与各平台压缩包，最后由 `checksums.txt` 统一覆盖全部资产。
-- `workflow_dispatch`：手动构建；产物上传到本次运行，只有在标签上运行才会发布 Release。
+- `push` 到 `main`：**每次推送都会运行**，固定名 Linux amd64 任务会构建、执行 smoke test，并把 `cliproxyapi-linux-amd64`、`build-info.json` 和 `checksums.txt` 上传到滚动的 [`latest`](https://github.com/sofs2005/CLIProxyAPI/releases/tag/latest) Release。
+- 推送 `v*` 标签：所有 job 都会运行，固定名二进制发布到该标签的 Release，同时发布各平台压缩包，最后由 `checksums.txt` 统一覆盖全部资产。
+- `workflow_dispatch`：手动构建，行为等同于 `main` 推送，同样更新滚动的 `latest` Release。
+
+`releases/latest/download/` 始终指向滚动的 `latest` Release，因此上面的下载地址即使在发布版本标签后，依然提供最新的 `main` 构建。历史版本可通过 `releases/download/<tag>/...` 获取。
 
 当二进制缺失、不是 amd64 静态 ELF、`--help` 未输出版本、与 `checksums.txt` 不匹配，或 `build-info.json` 字段不完整时，smoke test 会让工作流失败。
 
