@@ -16,7 +16,6 @@ permissions:
 
 env:
   GH_REPO: ${{ github.repository }}
-  GO_VERSION: '1.26.4'
   FIXED_ASSET_NAME: cliproxyapi-linux-amd64
 
 jobs:
@@ -303,7 +302,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
       - name: Refresh models catalog
         shell: bash
@@ -401,7 +400,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
       - name: Refresh models catalog
         shell: bash
@@ -416,6 +415,14 @@ jobs:
           echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
           echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          # The manylinux container downloads Go itself, so it needs the
+          # version as a plain string. Keep go.mod as the single source.
+          go_version="$(sed -n 's/^go \([0-9][0-9.]*\)$/\1/p' go.mod | head -n 1)"
+          if [[ -z "${go_version}" ]]; then
+            echo "could not read the go directive from go.mod" >&2
+            exit 1
+          fi
+          echo "GO_VERSION=${go_version}" >> "$GITHUB_ENV"
       - name: Build archive
         shell: bash
         env:
@@ -504,7 +511,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
       - name: Refresh models catalog
         shell: bash
@@ -603,7 +610,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
       - name: Refresh models catalog
         run: bash .github/scripts/refresh-model-catalogs.sh
