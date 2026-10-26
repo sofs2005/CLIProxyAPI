@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"
@@ -52,6 +53,13 @@ var (
 			proxyURL = util.ResolveProxyURL(&cfg.SDKConfig, "codex")
 		}
 		return codex.NewCodexAuthWithProxyURL(cfg, proxyURL)
+	}
+	newAntigravityOAuthService = func(cfg *config.Config) antigravityOAuthService {
+		proxyURL := ""
+		if cfg != nil {
+			proxyURL = util.ResolveProxyURL(&cfg.SDKConfig, "antigravity")
+		}
+		return antigravity.NewAntigravityAuthWithProxyURL(cfg, nil, proxyURL)
 	}
 )
 

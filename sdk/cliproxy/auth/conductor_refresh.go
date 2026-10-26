@@ -774,17 +774,17 @@ func clearUnauthorizedModelStates(auth *Auth, now time.Time) []string {
 			continue
 		}
 		if state.LastError != nil {
-			if !isCredentialAuthFailureError(state.LastError) {
+			if !isCredentialAuthFailureError(state.LastError) && !isInvalidGrantResultError(state.LastError) {
 				continue
 			}
-		} else if !isCredentialAuthFailureStatusMessage(state.StatusMessage) {
+		} else if !isCredentialAuthFailureStatusMessage(state.StatusMessage) && !isInvalidGrantErrorMessage(state.StatusMessage) {
 			// Keep model states without a credential error signal.
 			continue
 		}
 		anyChanged = true
 		if state.Quota.Exceeded && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
 			state.LastError = nil
-			if strings.Contains(strings.ToLower(state.StatusMessage), "unauthorized") {
+			if strings.Contains(strings.ToLower(state.StatusMessage), "unauthorized") || isInvalidGrantErrorMessage(state.StatusMessage) {
 				state.StatusMessage = state.Quota.Reason
 			}
 			state.UpdatedAt = now
