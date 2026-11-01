@@ -197,6 +197,8 @@ Behaviour of the workflow (same triggers as `docker-image.yml`):
 
 The smoke test fails the workflow when the binary is missing, is not an amd64 static ELF, does not print its version in `--help`, does not match `checksums.txt`, or `build-info.json` is incomplete.
 
+[Claude Code with a Codex backend](examples/claude-code-codex/README.md): optional visible progress, classifier routing, image-tool pass-through, and latency diagnostics.
+
 ## Management API
 
 see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
