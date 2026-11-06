@@ -15,6 +15,24 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// lastIndexFold returns the byte offset of the last ASCII-case-insensitive
+// occurrence of sub in b, or -1 when sub is absent.
+//
+// Unlike bytes.ToLower(b) + bytes.LastIndex(lower, sub), the offset returned
+// here is valid for b itself. bytes.ToLower maps runes with unicode.ToLower,
+// which can change a rune's UTF-8 length (Turkish 'İ' U+0130 is two bytes but
+// lowercases to 'i' U+0069, one byte), so an offset computed on the folded
+// copy drifts from the original slice and slicing b with it corrupts the
+// document.
+func lastIndexFold(b, sub []byte) int {
+	for i := len(b) - len(sub); i >= 0; i-- {
+		if bytes.EqualFold(b[i:i+len(sub)], sub) {
+			return i
+		}
+	}
+	return -1
+}
+
 func (s *Server) registerManagementRoutes() {
 	if s == nil || s.engine == nil || s.mgmt == nil {
 		return
@@ -698,9 +716,8 @@ func injectModelPriceDropdownClipPatch(html []byte) []byte {
 })();
 </script>`)
 
-	lower := bytes.ToLower(html)
 	bodyClose := []byte("</body>")
-	if idx := bytes.LastIndex(lower, bodyClose); idx >= 0 {
+	if idx := lastIndexFold(html, bodyClose); idx >= 0 {
 		out := make([]byte, 0, len(html)+len(patch))
 		out = append(out, html[:idx]...)
 		out = append(out, patch...)
@@ -1472,9 +1489,8 @@ func injectCodexFreeRefreshPatch(html []byte, codexRefreshToken string) []byte {
 
 	patch = bytes.ReplaceAll(patch, []byte("__CPA_CODEX_REFRESH_TOKEN__"), []byte(codexRefreshToken))
 
-	lower := bytes.ToLower(html)
 	bodyClose := []byte("</body>")
-	if idx := bytes.LastIndex(lower, bodyClose); idx >= 0 {
+	if idx := lastIndexFold(html, bodyClose); idx >= 0 {
 		out := make([]byte, 0, len(html)+len(patch))
 		out = append(out, html[:idx]...)
 		out = append(out, patch...)
@@ -2293,9 +2309,8 @@ func injectXAIRefreshPatch(html []byte, xaiRefreshToken string) []byte {
 
 	patch = bytes.ReplaceAll(patch, []byte("__CPA_XAI_REFRESH_TOKEN__"), []byte(xaiRefreshToken))
 
-	lower := bytes.ToLower(html)
 	bodyClose := []byte("</body>")
-	if idx := bytes.LastIndex(lower, bodyClose); idx >= 0 {
+	if idx := lastIndexFold(html, bodyClose); idx >= 0 {
 		out := make([]byte, 0, len(html)+len(patch))
 		out = append(out, html[:idx]...)
 		out = append(out, patch...)
@@ -2443,9 +2458,8 @@ func injectCodexResetSortPatch(html []byte) []byte {
 })();
 </script>`)
 
-	lower := bytes.ToLower(html)
 	bodyClose := []byte("</body>")
-	if idx := bytes.LastIndex(lower, bodyClose); idx >= 0 {
+	if idx := lastIndexFold(html, bodyClose); idx >= 0 {
 		out := make([]byte, 0, len(html)+len(patch))
 		out = append(out, html[:idx]...)
 		out = append(out, patch...)
