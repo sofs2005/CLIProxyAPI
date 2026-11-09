@@ -48,6 +48,7 @@ type authScheduler struct {
 	fillFirstSeed        uint64
 	fillFirstInflight    *fillFirstInflightTracker
 	fillFirstMaxInflight func() int
+	weightedSelector     *WeightedRoundRobinSelector
 	providers            map[string]*providerScheduler
 	authProviders        map[string]string
 	authGenerations      map[string]scheduledGenerationMeta
@@ -174,9 +175,11 @@ func restoreReadyViewCursors(view *readyView, state readyViewCursorState) {
 // newAuthScheduler constructs an empty scheduler configured for the supplied selector strategy.
 func newAuthScheduler(selector Selector) *authScheduler {
 	strategy, seed := schedulerConfigForSelector(selector)
+	weighted, _ := selector.(*WeightedRoundRobinSelector)
 	return &authScheduler{
 		strategy:            strategy,
 		fillFirstSeed:       seed,
+		weightedSelector:    weighted,
 		providers:           make(map[string]*providerScheduler),
 		authProviders:       make(map[string]string),
 		authGenerations:     make(map[string]scheduledGenerationMeta),
@@ -253,6 +256,7 @@ func (s *authScheduler) setSelector(selector Selector) {
 	defer s.mu.Unlock()
 	s.strategy = strategy
 	s.fillFirstSeed = seed
+	s.weightedSelector, _ = selector.(*WeightedRoundRobinSelector)
 	for _, provider := range s.providers {
 		if provider == nil {
 			continue
@@ -486,7 +490,7 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	providerKey := canonicalSchedulingProvider(provider)
-	modelKey := canonicalModelKey(model)
+	modelKey := canonicalModelLookupKey(model)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 	preferWebsocket := cliproxyexecutor.DownstreamWebsocket(ctx) && providerPrefersWebsocketTransport(providerKey) && pinnedAuthID == ""
@@ -507,6 +511,34 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
 	predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
+	if strategy == schedulerStrategyWeightedRoundRobin {
+		if ctx != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		shard.promoteExpiredLocked(time.Now())
+		priority, ready := shard.highestReadyPriorityLocked(preferWebsocket, predicate)
+		if !ready {
+			return nil, shard.unavailableErrorLocked(provider, model, predicate)
+		}
+		// A pin controls selection, not the peers against which traffic is charged.
+		accountingPredicate := scheduledAuthPredicate(eligibility, tried, "", true)
+		bucket := shard.readyByPriority[priority]
+		entries := bucket.all.flat
+		nonWebsocketOnly := false
+		if cliproxyexecutor.DownstreamWebsocket(ctx) && providerPrefersWebsocketTransport(providerKey) && bucket.ws.pickFirst(accountingPredicate) != nil {
+			if pinnedAuthID != "" && !shard.entries[pinnedAuthID].meta.websocketEnabled {
+				nonWebsocketOnly = true
+			} else {
+				entries = bucket.ws.flat
+			}
+		}
+		namespace := providerKey
+		if opts.Metadata[cliproxyexecutor.SessionAffinityProviderMetadataKey] == "mixed" {
+			namespace = "mixed"
+		}
+		route := namespace + ":" + canonicalModelLookupKey(weightedSelectorStateModel(ctx, model))
+		return s.pickWeightedPoolLocked(route, entries, accountingPredicate, pinnedAuthID, nonWebsocketOnly)
+	}
 	if picked := shard.pickReadyLocked(preferWebsocket, strategy, predicate); picked != nil {
 		return picked, nil
 	}
@@ -550,14 +582,14 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 	}
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
-	modelKey := canonicalModelKey(model)
+	modelKey := canonicalModelLookupKey(model)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if strategy == schedulerStrategyCurrent {
 		strategy = s.strategy
 	}
-	if pinnedAuthID != "" {
+	if pinnedAuthID != "" && strategy != schedulerStrategyWeightedRoundRobin {
 		providerKey := s.authProviders[pinnedAuthID]
 		if providerKey == "" || !containsProvider(normalized, providerKey) {
 			return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
@@ -602,6 +634,22 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			hasCandidate = true
 		}
 	}
+	if pinnedAuthID != "" {
+		providerKey := s.authProviders[pinnedAuthID]
+		if providerKey == "" || !containsProvider(normalized, providerKey) {
+			return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
+		}
+		shard := s.providers[providerKey].ensureModelLocked(modelKey, now)
+		if shard == nil {
+			return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
+		}
+		pinned := shard.entries[pinnedAuthID]
+		if pinned == nil || pinned.state != scheduledStateReady || !predicate(pinned) {
+			pinnedPredicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, true)
+			return nil, "", shard.unavailableErrorLocked("mixed", model, pinnedPredicate)
+		}
+		bestPriority, hasCandidate = pinned.meta.priority, true
+	}
 	if !hasCandidate {
 		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
@@ -641,20 +689,15 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			}
 			return entries[i].auth.ID < entries[j].auth.ID
 		})
-		if s.mixedWeightedStates == nil {
-			s.mixedWeightedStates = make(map[string]*smoothWeightedState)
+		if ctx != nil && ctx.Err() != nil {
+			return nil, "", ctx.Err()
 		}
-		state := s.mixedWeightedStates[cursorKey]
-		if state == nil {
-			state = &smoothWeightedState{}
-			s.mixedWeightedStates[cursorKey] = state
+		route := "mixed:" + canonicalModelLookupKey(weightedSelectorStateModel(ctx, model))
+		picked, errPick := s.pickWeightedPoolLocked(route, entries, predicate, pinnedAuthID, false)
+		if errPick != nil {
+			return nil, "", errPick
 		}
-		state.prepare(scheduledWeightVectorMatching(entries, predicate))
-		picked := pickSmoothWeightedScheduled(entries, state.current, predicate)
-		if picked != nil && picked.meta != nil {
-			return picked.auth, picked.meta.providerKey, nil
-		}
-		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
+		return picked, s.authProviders[picked.ID], nil
 	}
 
 	weights := make([]int, len(normalized))
@@ -735,7 +778,7 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 		}
 		providerState.strategy = s.strategy
 		providerState.fillFirstSeed = s.fillFirstSeed
-		shard := providerState.ensureModelLocked(canonicalModelKey(model), now)
+		shard := providerState.ensureModelLocked(canonicalModelLookupKey(model), now)
 		if shard == nil {
 			continue
 		}
@@ -1180,7 +1223,7 @@ func supportedModelSetForAuth(authID string) map[string]struct{} {
 		if model == nil {
 			continue
 		}
-		modelKey := canonicalModelKey(model.ID)
+		modelKey := canonicalModelLookupKey(model.ID)
 		if modelKey == "" {
 			continue
 		}
@@ -1233,7 +1276,7 @@ func (p *providerScheduler) updateTargetShardsLocked(meta *scheduledAuthMeta, ta
 
 	seen := make(map[string]struct{}, len(targetModels))
 	for _, m := range targetModels {
-		modelKey := canonicalModelKey(m)
+		modelKey := canonicalModelLookupKey(m)
 		if _, ok := seen[modelKey]; ok {
 			continue
 		}
@@ -1277,7 +1320,7 @@ func (p *providerScheduler) ensureModelLocked(modelKey string, now time.Time) *m
 	if p == nil {
 		return nil
 	}
-	modelKey = canonicalModelKey(modelKey)
+	modelKey = canonicalModelLookupKey(modelKey)
 	if shard, ok := p.modelShards[modelKey]; ok && shard != nil {
 		shard.strategy = p.strategy
 		shard.fillFirstSeed = p.fillFirstSeed
@@ -1307,7 +1350,7 @@ func (p *providerScheduler) ensureModelLocked(modelKey string, now time.Time) *m
 
 // supportsModel reports whether the auth metadata currently supports modelKey.
 func (m *scheduledAuthMeta) supportsModel(modelKey string) bool {
-	modelKey = canonicalModelKey(modelKey)
+	modelKey = canonicalModelLookupKey(modelKey)
 	if modelKey == "" {
 		return true
 	}
@@ -1592,7 +1635,6 @@ func (m *modelScheduler) candidateErrorsLocked(model string, predicate func(*sch
 	if m == nil {
 		return nil, time.Time{}, "", nil, time.Time{}, ""
 	}
-	modelKey := canonicalModelKey(model)
 	for _, entry := range m.entries {
 		if predicate != nil && !predicate(entry) {
 			continue
@@ -1604,15 +1646,7 @@ func (m *modelScheduler) candidateErrorsLocked(model string, predicate func(*sch
 		var curModelErr error
 		var curModelTime time.Time
 		if len(auth.ModelStates) > 0 {
-			if state, ok := auth.ModelStates[model]; ok && state != nil {
-				if state.LastError != nil {
-					curModelErr = state.LastError
-					curModelTime = state.UpdatedAt
-				} else if strings.TrimSpace(state.StatusMessage) != "" {
-					curModelErr = errors.New(state.StatusMessage)
-					curModelTime = state.UpdatedAt
-				}
-			} else if state, ok := auth.ModelStates[modelKey]; ok && state != nil {
+			if state := existingModelState(auth, model); state != nil {
 				if state.LastError != nil {
 					curModelErr = state.LastError
 					curModelTime = state.UpdatedAt
